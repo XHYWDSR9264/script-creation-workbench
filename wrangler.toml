@@ -12,3 +12,7 @@ not_found_handling = "single-page-application"
 binding = "DB"
 database_name = "script-creation-workbench-db"
 database_id = "d27b2151-4061-434f-89ff-2426d8ead847"
+
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "script-creation-workbench-files"

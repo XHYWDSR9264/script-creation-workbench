@@ -25,12 +25,18 @@ async function selectProject(index,notify=true){
   try{const data=await request(`/api/projects/${encodeURIComponent(p.id)}`);currentDetail=data.detail;renderDetail();if(notify)showToast(`已切换到「${p.name}」`)}catch(error){showToast(error.message)}
 }
 function renderDetail(){
-  const {project,profile,assets={},versions=[],gates=[],events=[]}=currentDetail;
+  const {project,profile,assets={},versions=[],gates=[],events=[],sources=[]}=currentDetail;
   $('projectTitle').textContent=project.name;$('breadcrumbProject').textContent=project.name;$('projectRoute').textContent=project.route;
   $('projectMeta').innerHTML=`<span class="tag">${escapeHtml(profile?.region||'待设定')}</span><span class="tag">${escapeHtml(profile?.medium||'待设定')}</span><span class="tag">${escapeHtml(profile?.genre||'待设定')}</span><span class="muted">总集数 ${profile?.total_episodes||60} · 本次提交 ${profile?.submission_start||1}—${profile?.submission_end||10} 集 · ${escapeHtml(profile?.opening_template||'未设模板')}</span>`;
   $('phaseTitle').textContent=`${profile?.current_stage||'G0 立项与参数'} · ${profile?.status||'待立项'}`;const progress=Number(profile?.progress||10);$('phaseProgress').style.width=`${progress}%`;$('progressText').textContent=`${progress}%`;
-  renderAssets(assets);renderVersions(versions);renderGates(gates);renderEvents(events);renderThread(events,project);
+  renderSources(sources);renderAssets(assets);renderVersions(versions);renderGates(gates);renderEvents(events);renderThread(events,project);
 }
+function formatBytes(value){const n=Number(value||0);if(n<1024)return`${n} B`;if(n<1048576)return`${(n/1024).toFixed(1)} KB`;return`${(n/1048576).toFixed(1)} MB`}
+function renderSources(sources){
+  $('sourceList').innerHTML=sources.length?sources.map(s=>`<div class="source-row"><span><strong>${escapeHtml(s.name)}</strong><small>${escapeHtml(s.mime)} · ${escapeHtml(s.sha256.slice(0,12))}</small></span><span>${formatBytes(s.byte_size)}</span><span>${formatTime(s.created_at)}</span><span class="source-badge ${s.extraction_status==='已提取'?'':'pending'}">${escapeHtml(s.extraction_status)}</span></div>`).join(''):'<div class="empty-state">尚无素材。TXT/MD导入后可直接进入后续模型上下文；DOCX/PDF将在解析服务接入后提取正文。</div>';
+}
+function fileToBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result).split(',')[1]||'');reader.onerror=()=>reject(reader.error||new Error('读取文件失败'));reader.readAsDataURL(file)})}
+async function uploadSources(files){const p=currentProject();if(!p||!files.length)return;let ok=0;for(const file of files){try{showToast(`正在导入 ${file.name}…`);const dataBase64=await fileToBase64(file);await request(`/api/projects/${encodeURIComponent(p.id)}/sources`,{method:'POST',body:JSON.stringify({name:file.name,mime:file.type||'application/octet-stream',dataBase64})});ok++}catch(e){showToast(`${file.name}：${e.message}`)}}await selectProject(projects.findIndex(x=>x.selected),false);if(ok)showToast(`已导入 ${ok} 个素材并完成哈希留档`)}
 function renderAssets(assets){
   $('assetGrid').innerHTML=Object.entries(assetDefs).map(([type,d])=>{const a=assets[type]||{content:'',version:1};const text=a.content.trim()?a.content.trim().slice(0,56):d.hint;return `<div class="asset-card" data-asset="${type}"><span class="asset-icon">${d.icon}</span><div><strong>${d.title}</strong><p>${escapeHtml(text)}</p></div><span class="asset-status">${a.content.trim()?`v${a.version}`:'待填写'}</span></div>`}).join('');
   $('assetGrid').querySelectorAll('.asset-card').forEach(x=>x.addEventListener('click',()=>openAsset(x.dataset.asset)));
@@ -64,7 +70,8 @@ $('createProject').addEventListener('click',async()=>{const body={name:$('newPro
 $('closeAssetModal').addEventListener('click',()=>toggleModal('assetModal',false));$('cancelAssetModal').addEventListener('click',()=>toggleModal('assetModal',false));$('saveAssetBtn').addEventListener('click',saveAsset);
 $('newVersionBtn').addEventListener('click',openVersion);$('closeVersionModal').addEventListener('click',()=>toggleModal('versionModal',false));$('cancelVersionModal').addEventListener('click',()=>toggleModal('versionModal',false));$('saveVersionBtn').addEventListener('click',saveVersion);
 ['projectModal','assetModal','versionModal'].forEach(id=>$(id).addEventListener('click',e=>{if(e.target.id===id)toggleModal(id,false)}));
-document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));tab.classList.add('active');['thread','assets','versions'].forEach(name=>$(`${name}Panel`).classList.toggle('hidden',tab.dataset.tab!==name))}));
+document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));tab.classList.add('active');['thread','sources','assets','versions'].forEach(name=>$(`${name}Panel`).classList.toggle('hidden',tab.dataset.tab!==name))}));
+$('uploadSourceBtn').addEventListener('click',()=>$('sourceFileInput').click());$('sourceFileInput').addEventListener('change',async e=>{await uploadSources([...e.target.files]);e.target.value=''});
 document.querySelectorAll('.nav-item,.settings-link').forEach(item=>item.addEventListener('click',()=>{document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(item.classList.contains('nav-item'))item.classList.add('active');showToast(item.textContent.trim()+'模块将在后续阶段接入')}));
 $('sendBtn').addEventListener('click',async()=>{const value=$('promptInput').value.trim(),p=currentProject();if(!value){showToast('请先输入任务内容');return}try{await request(`/api/projects/${encodeURIComponent(p.id)}/events`,{method:'POST',body:JSON.stringify({kind:'prompt',message:value})});$('promptInput').value='';await selectProject(projects.findIndex(x=>x.selected),false);showToast('任务已记录；模型队列接入后可直接执行')}catch(e){showToast(e.message)}});
 $('promptInput').addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter')$('sendBtn').click()});

@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0b111a" />
   <title>剧本创作总控台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=020" />
-  <link rel="stylesheet" href="workspace.css?v=020" />
+  <link rel="stylesheet" href="styles.css?v=030" />
+  <link rel="stylesheet" href="workspace.css?v=030" />
 </head>
 <body>
   <div class="app-shell">
@@ -77,6 +77,7 @@
 
           <div class="tabs" role="tablist">
             <button class="tab active" data-tab="thread">任务线程</button>
+            <button class="tab" data-tab="sources">素材库</button>
             <button class="tab" data-tab="assets">项目资料</button>
             <button class="tab" data-tab="versions">版本对比</button>
           </div>
@@ -100,6 +101,12 @@
                 <div class="card-actions"><button class="small-button" id="reviewBtn">打开校准稿</button><button class="text-button">查看问题清单</button></div>
               </article>
             </div>
+          </div>
+
+          <div class="tab-panel hidden" id="sourcesPanel">
+            <div class="section-heading"><div><h2>项目素材</h2><p>素材按项目隔离保存，原文件与SHA-256同时留档；TXT/MD可立即提取，DOCX/PDF先安全存储。</p></div><button class="small-button" id="uploadSourceBtn">＋ 导入素材</button></div>
+            <input id="sourceFileInput" type="file" multiple accept=".txt,.md,.markdown,.json,.csv,.tsv,.docx,.pdf" hidden />
+            <div class="source-list" id="sourceList"></div>
           </div>
 
           <div class="tab-panel hidden" id="assetsPanel">
@@ -140,6 +147,6 @@
   <div class="modal-backdrop hidden" id="versionModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">正文版本</span><h2>保存一个不可覆盖的新版本</h2></div><button class="icon-button" id="closeVersionModal">×</button></div><div class="form-grid"><label>版本名称<input id="versionLabel" placeholder="例如：v0.1 校准稿" /></label><label>来源<select id="versionSource"><option>人工编辑</option><option>模型生成</option><option>定向修复</option></select></label><label>起始集<input id="versionStart" type="number" min="1" value="1" /></label><label>结束集<input id="versionEnd" type="number" min="1" value="3" /></label></div><label>正文内容<textarea class="large-editor draft-editor" id="versionContent" placeholder="粘贴本次版本的完整正文"></textarea></label><div class="modal-actions"><button class="text-button" id="cancelVersionModal">取消</button><button class="primary-button" id="saveVersionBtn">保存正文版本</button></div></div></div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="app.js?v=020"></script>
+  <script src="app.js?v=030"></script>
 </body>
 </html>

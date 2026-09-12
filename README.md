@@ -38,3 +38,5 @@ https://script-creation-workbench.xhywdsr9264.workers.dev
 - 正文不可覆盖版本、提交集数范围和SHA-256
 - G0—G6 SOP闸门
 - 项目活动日志
+- 项目素材库：TXT/MD即时提取，DOCX/PDF保留原文件并绑定SHA-256
+- Cloudflare R2原始素材存储（线上）与项目隔离文件存储（本地）

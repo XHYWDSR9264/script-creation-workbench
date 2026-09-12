@@ -1,4 +1,5 @@
 const ASSET_TYPES = new Set(['synopsis', 'characters', 'world', 'beat_matrix']);
+const TEXT_EXTENSIONS = new Set(['txt','md','markdown','json','csv','tsv']);
 const GATES = [['G0','立项与参数'],['G1','方案与卡点'],['G2','第1—3集校准'],['G3','批次创作'],['G4','内容终审'],['G5','朱雀同版检测'],['G6','交付与归档']];
 const json = (payload, status = 200) => new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 const now = () => new Date().toISOString();
@@ -21,12 +22,22 @@ async function detail(db, id) {
   const versions = (await db.prepare('SELECT id,label,range_start,range_end,sha256,source,status,created_at FROM draft_versions WHERE project_id=? ORDER BY created_at DESC').bind(id).all()).results;
   const gates = (await db.prepare('SELECT gate_code,title,status,note,updated_at FROM gates WHERE project_id=? ORDER BY gate_code').bind(id).all()).results;
   const events = (await db.prepare('SELECT kind,message,created_at FROM activity_logs WHERE project_id=? ORDER BY id DESC LIMIT 50').bind(id).all()).results;
-  return {project, profile, assets:Object.fromEntries(assetsRows.map(x=>[x.asset_type,{content:x.content,version:x.version,updatedAt:x.updatedAt}])), versions, gates, events};
+  const sources = (await db.prepare('SELECT id,name,mime,byte_size,sha256,extraction_status,created_at FROM source_documents WHERE project_id=? ORDER BY created_at DESC').bind(id).all()).results;
+  return {project, profile, assets:Object.fromEntries(assetsRows.map(x=>[x.asset_type,{content:x.content,version:x.version,updatedAt:x.updatedAt}])), versions, gates, events, sources};
+}
+
+function decodeBase64(value) {
+  const binary = atob(value), bytes = new Uint8Array(binary.length);
+  for (let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+  return bytes;
+}
+async function sha256(bytes) {
+  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(x=>x.toString(16).padStart(2,'0')).join('');
 }
 
 async function api(request, env) {
   const url = new URL(request.url), parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
-  if (url.pathname === '/api/health') return json({ok:true,service:'剧本创作总控台',storage:'cloudflare-d1',version:'0.2.0'});
+  if (url.pathname === '/api/health') return json({ok:true,service:'剧本创作总控台',storage:'cloudflare-d1',version:'0.3.0'});
   if (!env.DB) return json({error:'数据库绑定未配置'},503);
 
   if (url.pathname === '/api/projects' && request.method === 'GET') {
@@ -47,6 +58,10 @@ async function api(request, env) {
   if(parts.length===4&&parts[0]==='api'&&parts[1]==='versions'&&parts[3]==='content'&&request.method==='GET') {
     const version=await env.DB.prepare('SELECT * FROM draft_versions WHERE id=?').bind(parts[2]).first(); return version?json({version}):json({error:'版本不存在'},404);
   }
+  if(parts.length===4&&parts[0]==='api'&&parts[1]==='sources'&&parts[3]==='content'&&request.method==='GET') {
+    const source=await env.DB.prepare('SELECT id,name,mime,byte_size,sha256,extracted_text,extraction_status,created_at FROM source_documents WHERE id=?').bind(parts[2]).first();
+    return source?json({source}):json({error:'素材不存在'},404);
+  }
   if(parts.length===4&&parts[0]==='api'&&parts[1]==='projects'&&parts[3]==='events'&&request.method==='POST') {
     let body;try{body=await request.json()}catch{return json({error:'JSON格式错误'},400)} const message=String(body?.message||'').trim(),kind=String(body?.kind||'task').slice(0,30); if(!message)return json({error:'事件内容不能为空'},400);
     const id=parts[2],stamp=now(),exists=await env.DB.prepare('SELECT id FROM projects WHERE id=?').bind(id).first(); if(!exists)return json({error:'项目不存在'},404);
@@ -59,6 +74,24 @@ async function api(request, env) {
     await env.DB.prepare('INSERT INTO draft_versions(id,project_id,label,range_start,range_end,content,sha256,source,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(versionId,id,label,start,end,content,digest,source,'已保存',stamp).run();
     await env.DB.prepare('INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)').bind(id,'version',`保存正文版本 ${label}（第${start}—${end}集）`,stamp).run(); await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(stamp,id).run();
     return json({version:{id:versionId,label,range_start:start,range_end:end,sha256:digest,source,status:'已保存',created_at:stamp}},201);
+  }
+  if(parts.length===4&&parts[0]==='api'&&parts[1]==='projects'&&parts[3]==='sources'&&request.method==='POST') {
+    let body;try{body=await request.json()}catch{return json({error:'JSON格式错误'},400)}
+    const projectId=parts[2],name=String(body?.name||'').trim(),mime=String(body?.mime||'application/octet-stream').slice(0,120),base64=String(body?.dataBase64||'');
+    if(!name||name.length>180||!base64)return json({error:'文件名和文件内容不能为空'},400);
+    if(!env.FILES)return json({error:'R2素材存储未配置'},503);
+    if(!await env.DB.prepare('SELECT id FROM projects WHERE id=?').bind(projectId).first())return json({error:'项目不存在'},404);
+    let bytes;try{bytes=decodeBase64(base64)}catch{return json({error:'文件编码无效'},400)}
+    if(bytes.byteLength>10*1024*1024)return json({error:'单个素材不能超过10MB'},413);
+    const id=`s-${crypto.randomUUID().replaceAll('-','').slice(0,12)}`,stamp=now(),safeName=name.replace(/[^\p{L}\p{N}._-]/gu,'_'),objectKey=`projects/${projectId}/sources/${id}/${safeName}`;
+    const digest=await sha256(bytes),ext=(name.split('.').pop()||'').toLowerCase();
+    let extracted='',status='待解析';
+    if(TEXT_EXTENSIONS.has(ext)||mime.startsWith('text/')){try{extracted=new TextDecoder('utf-8',{fatal:false}).decode(bytes);status='已提取'}catch{status='提取失败'}}
+    await env.FILES.put(objectKey,bytes,{httpMetadata:{contentType:mime},customMetadata:{projectId,sha256:digest,originalName:name}});
+    await env.DB.prepare('INSERT INTO source_documents(id,project_id,name,mime,object_key,byte_size,sha256,extracted_text,extraction_status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)').bind(id,projectId,name,mime,objectKey,bytes.byteLength,digest,extracted,status,stamp).run();
+    await env.DB.prepare('INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)').bind(projectId,'source',`导入素材：${name}（${status}）`,stamp).run();
+    await env.DB.prepare('UPDATE projects SET updated_at=? WHERE id=?').bind(stamp,projectId).run();
+    return json({source:{id,name,mime,byte_size:bytes.byteLength,sha256:digest,extraction_status:status,created_at:stamp}},201);
   }
   if(parts.length===5&&parts[0]==='api'&&parts[1]==='projects'&&parts[3]==='assets'&&ASSET_TYPES.has(parts[4])&&request.method==='PUT') {
     let body;try{body=await request.json()}catch{return json({error:'JSON格式错误'},400)} const id=parts[2],type=parts[4],content=String(body?.content||''),stamp=now(); if(!await env.DB.prepare('SELECT id FROM projects WHERE id=?').bind(id).first())return json({error:'项目不存在'},404);
