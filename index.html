@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0b111a" />
   <title>剧本创作总控台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=030" />
-  <link rel="stylesheet" href="workspace.css?v=030" />
+  <link rel="stylesheet" href="styles.css?v=040" />
+  <link rel="stylesheet" href="workspace.css?v=040" />
 </head>
 <body>
   <div class="app-shell">
@@ -36,7 +36,7 @@
       <div class="project-list" id="projectList"></div>
 
       <div class="sidebar-footer">
-        <div class="connection"><span class="status-dot green"></span><span>本地工作区已连接</span></div>
+        <div class="connection"><span class="status-dot green"></span><span id="connectionLabel">工作区连接中</span></div>
         <button class="settings-link" data-view="settings"><span>⚙</span> 设置</button>
       </div>
     </aside>
@@ -45,7 +45,7 @@
       <header class="topbar">
         <div class="breadcrumbs"><span>工作区</span><b>/</b><strong id="breadcrumbProject">退婚当天，我押十箱救命药闯雪关</strong></div>
         <div class="top-actions">
-          <div class="model-pill"><span class="status-dot blue"></span><span id="modelName">gpt-5.6-sol</span></div>
+          <button class="model-pill" id="openSettingsBtn"><span class="status-dot blue"></span><span id="modelName">未配置模型</span></button>
           <button class="icon-button" title="帮助">?</button>
           <div class="avatar">G</div>
         </div>
@@ -122,7 +122,7 @@
           <div class="composer">
             <div class="composer-top"><span class="composer-label">向当前项目发起任务</span><span class="shortcut">Ctrl + Enter 运行</span></div>
             <textarea id="promptInput" placeholder="例如：检查第1—3集是否存在人物所知越界，不改动正文，输出问题清单"></textarea>
-            <div class="composer-bottom"><div class="composer-tools"><button class="tool-button">＋ 附件</button><button class="tool-button">任务类型：审校⌄</button></div><button class="send-button" id="sendBtn">发送 <span>↗</span></button></div>
+          <div class="composer-bottom"><div class="composer-tools"><button class="tool-button" id="composerAttachment">＋ 附件</button><select class="tool-button task-select" id="taskType"><option value="reply">仅回答</option><option value="synopsis">生成剧情梗概</option><option value="characters">生成人物小传</option><option value="world">生成世界观</option><option value="beat_matrix">生成卡点矩阵</option><option value="draft">生成正文版本</option></select></div><button class="send-button" id="sendBtn">运行 <span>↗</span></button></div>
           </div>
         </section>
 
@@ -130,7 +130,7 @@
           <div class="inspector-header"><h2>项目状态</h2><button class="icon-button subtle">•••</button></div>
           <div class="status-summary"><div class="status-summary-top"><span class="status-dot amber"></span><strong>等待人工确认</strong></div><p>校准稿完成后才能进入批次创作。</p></div>
           <div class="inspector-block"><div class="block-heading"><span>SOP阶段</span><span class="muted" id="gateProgress">G0 / 6</span></div><div class="gate-list" id="gateList"></div></div>
-          <div class="inspector-block"><div class="block-heading"><span>质量指标</span><button class="text-button">查看详情</button></div><div class="metric-row"><span>结构审计</span><strong class="green-text">通过</strong></div><div class="metric-row"><span>连续性审计</span><strong class="amber-text">待复核</strong></div><div class="metric-row"><span>内容质量</span><strong class="muted">待评分</strong></div><div class="metric-row"><span>朱雀人工特征</span><strong class="muted">未检测</strong></div></div>
+          <div class="inspector-block"><div class="block-heading"><span>质量指标</span><button class="text-button" id="qualityDetailBtn">查看详情</button></div><div class="metric-row"><span>结构审计</span><strong class="muted" id="auditMetric">未审计</strong></div><div class="metric-row"><span>连续性审计</span><strong class="amber-text">待人工复核</strong></div><div class="metric-row"><span>内容质量</span><strong class="muted">待人工评分</strong></div><div class="metric-row"><span>朱雀人工特征</span><strong class="muted" id="detectorMetric">未检测</strong></div></div>
           <div class="inspector-block log-block"><div class="block-heading"><span>运行日志</span><button class="text-button">全部日志</button></div><div id="activityLog"></div></div>
           <div class="next-action"><span class="next-icon">→</span><div><small>下一步</small><strong>确认第1—3集校准稿</strong></div><button id="nextActionBtn">打开</button></div>
         </aside>
@@ -146,7 +146,15 @@
 
   <div class="modal-backdrop hidden" id="versionModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">正文版本</span><h2>保存一个不可覆盖的新版本</h2></div><button class="icon-button" id="closeVersionModal">×</button></div><div class="form-grid"><label>版本名称<input id="versionLabel" placeholder="例如：v0.1 校准稿" /></label><label>来源<select id="versionSource"><option>人工编辑</option><option>模型生成</option><option>定向修复</option></select></label><label>起始集<input id="versionStart" type="number" min="1" value="1" /></label><label>结束集<input id="versionEnd" type="number" min="1" value="3" /></label></div><label>正文内容<textarea class="large-editor draft-editor" id="versionContent" placeholder="粘贴本次版本的完整正文"></textarea></label><div class="modal-actions"><button class="text-button" id="cancelVersionModal">取消</button><button class="primary-button" id="saveVersionBtn">保存正文版本</button></div></div></div>
 
+  <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">模型网关</span><h2>接口设置</h2></div><button class="icon-button" id="closeSettingsModal">×</button></div><div class="modal-note secure-note">API Key只保存在当前浏览器会话，不写入数据库、运行日志或项目文件。</div><div class="form-grid"><label>Base URL<input id="llmBaseUrl" placeholder="例如：https://example.com/v1" /></label><label>模型名称<input id="llmModel" placeholder="例如：gpt-5.6-sol" /></label><label>接口协议<select id="llmWire"><option value="responses">Responses API</option><option value="chat">Chat Completions</option></select></label><label>推理强度<select id="llmReasoning"><option>high</option><option>xhigh</option><option>medium</option><option>low</option></select></label></div><label>API Key<input id="llmKey" type="password" autocomplete="off" placeholder="输入后仅保留到当前标签关闭" /></label><div class="test-result" id="modelTestResult">尚未测试接口</div><div class="modal-actions"><button class="small-button" id="testModelBtn">测试接口</button><button class="primary-button" id="saveSettingsBtn">保存本次会话</button></div></div></div>
+
+  <div class="modal-backdrop hidden" id="auditModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">SOP审校</span><h2>正文结构审计</h2></div><button class="icon-button" id="closeAuditModal">×</button></div><label>审计版本<select id="auditVersion"></select></label><div class="test-result" id="auditResult">选择正文版本后运行。该模块检查集数、场次、乱码、越界、括号和重复句，不冒充人工内容终审。</div><div class="modal-actions"><button class="primary-button" id="runAuditBtn">运行结构审计</button></div></div></div>
+
+  <div class="modal-backdrop hidden" id="detectorModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">朱雀同版证据</span><h2>登记真实检测报告</h2></div><button class="icon-button" id="closeDetectorModal">×</button></div><label>绑定正文版本<select id="detectorVersion"></select></label><div class="form-grid"><label>人工创作特征（%）<input id="humanScore" type="number" min="0" max="100" step="0.1" /></label><label>疑似AI特征（%）<input id="suspectedScore" type="number" min="0" max="100" step="0.1" value="0" /></label><label>AI创作特征（%）<input id="aiScore" type="number" min="0" max="100" step="0.1" value="0" /></label><label>朱雀报告截图<input id="detectorFile" type="file" accept="image/png,image/jpeg" /></label></div><div class="modal-note">保存时自动绑定所选正文SHA-256；正文产生新版本后，旧报告不能替代新版本检测。</div><div class="report-list" id="detectorReports"></div><div class="modal-actions"><button class="primary-button" id="saveDetectorBtn">保存检测报告</button></div></div></div>
+
+  <div class="modal-backdrop hidden" id="deliveryModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">交付归档</span><h2>导出项目证据包</h2></div><button class="icon-button" id="closeDeliveryModal">×</button></div><label>正文版本<select id="deliveryVersion"></select></label><div class="modal-note">当前可导出TXT标准合并稿或JSON完整项目快照。DOCX/PDF排版仍需后续接入正式模板引擎。</div><div class="delivery-grid"><button class="primary-button" id="downloadTxtBtn">下载TXT合并稿</button><button class="small-button" id="downloadJsonBtn">下载JSON项目快照</button></div></div></div>
+
   <div class="toast hidden" id="toast"></div>
-  <script src="app.js?v=030"></script>
+  <script src="app.js?v=040"></script>
 </body>
 </html>

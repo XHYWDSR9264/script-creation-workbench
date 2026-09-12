@@ -64,6 +64,38 @@ CREATE TABLE IF NOT EXISTS source_documents (
 CREATE INDEX IF NOT EXISTS idx_source_documents_project
 ON source_documents(project_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS audit_reports (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  version_id TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  findings_json TEXT NOT NULL DEFAULT '[]',
+  sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_audit_reports_project ON audit_reports(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS detector_reports (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  version_id TEXT NOT NULL,
+  human_score REAL NOT NULL,
+  suspected_score REAL NOT NULL DEFAULT 0,
+  ai_score REAL NOT NULL DEFAULT 0,
+  report_object_key TEXT NOT NULL,
+  report_name TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_detector_reports_project ON detector_reports(project_id, created_at DESC);
+
 INSERT OR IGNORE INTO project_profiles(project_id,genre,current_stage,progress,status,updated_at)
 SELECT id,'待设定','G0 立项与参数',10,'待立项',updated_at FROM projects;
 INSERT OR IGNORE INTO gates(project_id,gate_code,title,status,note,updated_at)
