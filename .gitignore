@@ -1,0 +1,15 @@
+# Local runtime state
+workbench.sqlite3
+workbench.sqlite3-*
+*.log
+
+# Editor / OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local secrets
+.env
+.env.*
+!.env.example

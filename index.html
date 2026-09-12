@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b111a" />
+  <title>剧本创作总控台</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand">
+        <div class="brand-mark">剧</div>
+        <div>
+          <div class="brand-name">剧本创作总控台</div>
+          <div class="brand-sub">STORY OPS / LOCAL</div>
+        </div>
+      </div>
+
+      <button class="new-project" id="newProjectBtn"><span>＋</span> 新建项目</button>
+
+      <div class="nav-section-label">工作区</div>
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span> 项目总览</button>
+        <button class="nav-item" data-view="tasks"><span class="nav-icon">▣</span> 创作任务</button>
+        <button class="nav-item" data-view="drafts"><span class="nav-icon">≡</span> 正文版本</button>
+        <button class="nav-item" data-view="audit"><span class="nav-icon">✓</span> SOP审校</button>
+        <button class="nav-item" data-view="detector"><span class="nav-icon">◈</span> 朱雀检测</button>
+        <button class="nav-item" data-view="delivery"><span class="nav-icon">↗</span> 交付归档</button>
+      </nav>
+
+      <div class="nav-section-label project-label">最近项目</div>
+      <div class="project-list" id="projectList"></div>
+
+      <div class="sidebar-footer">
+        <div class="connection"><span class="status-dot green"></span><span>本地工作区已连接</span></div>
+        <button class="settings-link" data-view="settings"><span>⚙</span> 设置</button>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div class="breadcrumbs"><span>工作区</span><b>/</b><strong id="breadcrumbProject">退婚当天，我押十箱救命药闯雪关</strong></div>
+        <div class="top-actions">
+          <div class="model-pill"><span class="status-dot blue"></span><span id="modelName">gpt-5.6-sol</span></div>
+          <button class="icon-button" title="帮助">?</button>
+          <div class="avatar">G</div>
+        </div>
+      </header>
+
+      <div class="workspace" id="workspace">
+        <section class="content-column">
+          <div class="project-heading">
+            <div>
+              <div class="eyebrow">当前项目 · <span id="projectRoute">定制卡点扩写</span></div>
+              <h1 id="projectTitle">退婚当天，我押十箱救命药闯雪关</h1>
+              <div class="meta-row">
+                <span class="tag">古装</span><span class="tag">女主</span><span class="tag">货运创业</span>
+                <span class="muted">总集数 60 · 本次提交 1—10 集 · 老王模板</span>
+              </div>
+            </div>
+            <button class="more-button" title="项目操作">•••</button>
+          </div>
+
+          <div class="phase-strip">
+            <div class="phase-main">
+              <div class="phase-label"><span class="status-dot amber"></span> 当前阶段</div>
+              <div class="phase-title" id="phaseTitle">第1—3集校准 · 待人工确认</div>
+              <div class="progress-track"><span id="phaseProgress" style="width: 67%"></span></div>
+            </div>
+            <div class="phase-stat"><span>已完成</span><strong id="progressText">67%</strong></div>
+            <button class="primary-button" id="runTaskBtn">▶ 继续任务</button>
+          </div>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="thread">任务线程</button>
+            <button class="tab" data-tab="assets">项目资料</button>
+            <button class="tab" data-tab="versions">版本对比</button>
+          </div>
+
+          <div class="tab-panel" id="threadPanel">
+            <div class="section-heading"><div><h2>创作线程</h2><p>所有生成、审校和人工接管都在当前项目内留痕。</p></div><span class="run-id">RUN-20260912-001</span></div>
+            <div class="thread-feed" id="threadFeed">
+              <article class="thread-card system-card">
+                <div class="card-top"><div class="actor"><span class="actor-icon system">◌</span><div><strong>剧本创作总控台</strong><span class="actor-role">流程调度</span></div></div><time>刚刚</time></div>
+                <p>已读取定制卡点：断崖逃生、夺回旧车、继母破坏刹车、路霸截货、首批急件冲线。当前先推进到一卡结束，不自动扩写二卡。</p>
+                <div class="card-tags"><span class="mini-tag blue-tag">参数已锁定</span><span class="mini-tag">范围：第1—10集</span></div>
+              </article>
+              <article class="thread-card">
+                <div class="card-top"><div class="actor"><span class="actor-icon ai">AI</span><div><strong>方案分析</strong><span class="actor-role">内容引擎</span></div></div><time>2分钟前</time></div>
+                <p>已建立主线：谈映真从被动求生转向掌握车辆、货源和路线的主动创业者。下一检查点是第3集“刹车异常”与第4集“车损证据”的因果闭合。</p>
+                <div class="card-tags"><span class="mini-tag green-tag">已完成</span><span class="mini-tag">连续性账本已更新</span></div>
+              </article>
+              <article class="thread-card warning-card">
+                <div class="card-top"><div class="actor"><span class="actor-icon review">!</span><div><strong>人工确认</strong><span class="actor-role">需要你的判断</span></div></div><time>待处理</time></div>
+                <p>第1—3集已生成。请重点确认：谈映真在悬崖车厢中的驾驶能力来源、旧卡车产权依据、湛凛声首次介入是否过早。</p>
+                <div class="card-actions"><button class="small-button" id="reviewBtn">打开校准稿</button><button class="text-button">查看问题清单</button></div>
+              </article>
+            </div>
+          </div>
+
+          <div class="tab-panel hidden" id="assetsPanel">
+            <div class="section-heading"><div><h2>项目资料</h2><p>前置设定与正文版本分开管理。</p></div><button class="small-button">编辑资料</button></div>
+            <div class="asset-grid">
+              <div class="asset-card"><span class="asset-icon">✦</span><div><strong>剧情梗概</strong><p>60集主线与五个一卡事件</p></div><span class="asset-status">已锁定</span></div>
+              <div class="asset-card"><span class="asset-icon">◎</span><div><strong>人物小传</strong><p>谈映真 / 湛凛声 / 反派关系</p></div><span class="asset-status">已锁定</span></div>
+              <div class="asset-card"><span class="asset-icon">▤</span><div><strong>卡点矩阵</strong><p>一卡至结尾14个大事件</p></div><span class="asset-status">已锁定</span></div>
+              <div class="asset-card"><span class="asset-icon">⌁</span><div><strong>连续性账本</strong><p>人物、车辆、路线、证据</p></div><span class="asset-status">待复核</span></div>
+            </div>
+          </div>
+
+          <div class="tab-panel hidden" id="versionsPanel">
+            <div class="section-heading"><div><h2>版本对比</h2><p>冻结送检前，所有正文修改都可追溯。</p></div></div>
+            <div class="version-table"><div class="version-row header"><span>版本</span><span>来源</span><span>范围</span><span>状态</span><span></span></div><div class="version-row"><span><b>v0.4</b><small>2026-09-12 18:40</small></span><span>人工修订</span><span>第1—3集</span><span class="status-text amber-text">待确认</span><button class="text-button">查看</button></div><div class="version-row"><span><b>v0.3</b><small>2026-09-12 18:12</small></span><span>模型生成</span><span>第1—3集</span><span class="status-text green-text">已保存</span><button class="text-button">查看</button></div></div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-top"><span class="composer-label">向当前项目发起任务</span><span class="shortcut">Ctrl + Enter 运行</span></div>
+            <textarea id="promptInput" placeholder="例如：检查第1—3集是否存在人物所知越界，不改动正文，输出问题清单"></textarea>
+            <div class="composer-bottom"><div class="composer-tools"><button class="tool-button">＋ 附件</button><button class="tool-button">任务类型：审校⌄</button></div><button class="send-button" id="sendBtn">发送 <span>↗</span></button></div>
+          </div>
+        </section>
+
+        <aside class="inspector" aria-label="项目状态">
+          <div class="inspector-header"><h2>项目状态</h2><button class="icon-button subtle">•••</button></div>
+          <div class="status-summary"><div class="status-summary-top"><span class="status-dot amber"></span><strong>等待人工确认</strong></div><p>校准稿完成后才能进入批次创作。</p></div>
+          <div class="inspector-block"><div class="block-heading"><span>SOP阶段</span><span class="muted">G2 / 6</span></div><div class="gate-list"><div class="gate done"><span>✓</span><div><strong>G0 立项与参数</strong><small>已锁定</small></div></div><div class="gate done"><span>✓</span><div><strong>G1 方案与卡点</strong><small>已锁定</small></div></div><div class="gate current"><span>2</span><div><strong>G2 第1—3集校准</strong><small>待人工确认</small></div></div><div class="gate"><span>3</span><div><strong>G3 批次创作</strong><small>未开始</small></div></div><div class="gate"><span>4</span><div><strong>G4 全集终审</strong><small>未开始</small></div></div><div class="gate"><span>5</span><div><strong>G5 朱雀同版检测</strong><small>未开始</small></div></div></div></div>
+          <div class="inspector-block"><div class="block-heading"><span>质量指标</span><button class="text-button">查看详情</button></div><div class="metric-row"><span>结构审计</span><strong class="green-text">通过</strong></div><div class="metric-row"><span>连续性审计</span><strong class="amber-text">待复核</strong></div><div class="metric-row"><span>内容质量</span><strong class="muted">待评分</strong></div><div class="metric-row"><span>朱雀人工特征</span><strong class="muted">未检测</strong></div></div>
+          <div class="inspector-block log-block"><div class="block-heading"><span>运行日志</span><button class="text-button">全部日志</button></div><div class="log-line"><time>18:40</time><span class="log-dot green"></span><p>保存 v0.4 人工修订稿</p></div><div class="log-line"><time>18:36</time><span class="log-dot blue"></span><p>连续性账本更新 4 条</p></div><div class="log-line"><time>18:31</time><span class="log-dot amber"></span><p>创建人工确认节点</p></div></div>
+          <div class="next-action"><span class="next-icon">→</span><div><small>下一步</small><strong>确认第1—3集校准稿</strong></div><button id="nextActionBtn">打开</button></div>
+        </aside>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop hidden" id="projectModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal"><div class="modal-header"><div><span class="eyebrow">新建工作项目</span><h2 id="modalTitle">创建一个独立项目</h2></div><button class="icon-button" id="closeModal">×</button></div><label>项目名称<input id="newProjectName" placeholder="例如：我在旧厂房开夜校" /></label><label>生产路线<select id="newProjectRoute"><option>完全原创 / 市场参考</option><option>授权IP改编</option><option>深度二创</option><option>定制卡点扩写</option></select></label><div class="modal-note">新项目会自动建立独立的素材、正文、审校、检测和交付空间。</div><div class="modal-actions"><button class="text-button" id="cancelModal">取消</button><button class="primary-button" id="createProject">创建项目</button></div></div>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>
