@@ -1,0 +1,14 @@
+name = "script-creation-workbench"
+main = "worker.js"
+compatibility_date = "2026-09-12"
+workers_dev = true
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "script-creation-workbench-db"
+database_id = "d27b2151-4061-434f-89ff-2426d8ead847"

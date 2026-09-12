@@ -9,6 +9,7 @@ Thumbs.db
 .vscode/
 .idea/
 __pycache__/
+.wrangler/
 
 # Local secrets
 .env
