@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0b111a" />
   <title>剧本创作总控台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=050" />
-  <link rel="stylesheet" href="workspace.css?v=050" />
+  <link rel="stylesheet" href="styles.css?v=060" />
+  <link rel="stylesheet" href="workspace.css?v=060" />
 </head>
 <body>
   <div class="app-shell">
@@ -28,6 +28,7 @@
         <button class="nav-item" data-view="tasks"><span class="nav-icon">▣</span> 创作任务</button>
         <button class="nav-item" data-view="drafts"><span class="nav-icon">≡</span> 正文版本</button>
         <button class="nav-item" data-view="audit"><span class="nav-icon">✓</span> SOP审校</button>
+        <button class="nav-item" data-view="continuity"><span class="nav-icon">⌁</span> 连续性账本</button>
         <button class="nav-item" data-view="detector"><span class="nav-icon">◈</span> 朱雀检测</button>
         <button class="nav-item" data-view="delivery"><span class="nav-icon">↗</span> 交付归档</button>
       </nav>
@@ -160,7 +161,9 @@
 
   <div class="modal-backdrop hidden" id="gateModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">人工闸门</span><h2>批准或驳回当前阶段</h2></div><button class="icon-button" id="closeGateModal">×</button></div><div class="form-grid"><label>阶段<select id="gateCode"></select></label><label>绑定最新正文<select id="gateVersion"></select></label></div><label>人工意见<textarea id="gateNote" placeholder="写明确认依据、修改要求或驳回原因"></textarea></label><div class="modal-note">G4必须有当前版本通过的AI内部深审；G5必须有当前版本达到门槛的真实朱雀报告；G6还要求前两项已批准。</div><div class="modal-actions"><button class="small-button danger-button" id="rejectGateBtn">驳回</button><button class="primary-button" id="approveGateBtn">人工批准</button></div></div></div>
 
+  <div class="modal-backdrop hidden" id="continuityModal" role="dialog" aria-modal="true"><div class="modal extra-wide-modal"><div class="modal-header"><div><span class="eyebrow">连续性账本</span><h2>人物、道具、时间、权限与地点</h2></div><button class="icon-button" id="closeContinuityModal">×</button></div><div class="continuity-toolbar"><label>从正文提取<select id="continuityVersion"></select></label><button class="small-button" id="extractContinuityBtn">提取人物与地点</button></div><div id="continuityList" class="continuity-list"></div><h3>新增人工条目</h3><div class="form-grid"><label>类别<select id="continuityCategory"><option value="character">人物</option><option value="prop">道具</option><option value="timeline">时间线</option><option value="permission">权限/证照</option><option value="location">地点</option></select></label><label>主体<input id="continuitySubject" placeholder="例如：父亲留下的旧卡车" /></label><label>当前状态<input id="continuityState" placeholder="归属、伤势、是否取得、是否失效" /></label><label>首次出现集<input id="continuityFirst" type="number" min="1" /></label><label>最后确认集<input id="continuityLast" type="number" min="1" /></label><label>备注<input id="continuityNotes" placeholder="证据、后续待核项或人物所知边界" /></label></div><div class="modal-actions"><button class="primary-button" id="addContinuityBtn">添加到账本</button></div></div></div>
+
   <div class="toast hidden" id="toast"></div>
-  <script src="app.js?v=050"></script>
+  <script src="app.js?v=060"></script>
 </body>
 </html>

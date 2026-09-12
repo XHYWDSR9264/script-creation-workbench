@@ -109,11 +109,21 @@ CREATE TABLE IF NOT EXISTS task_runs (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_type TEXT NOT NULL,
   instruction TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
   progress INTEGER NOT NULL DEFAULT 0, output_preview TEXT NOT NULL DEFAULT '',
-  error TEXT NOT NULL DEFAULT '', version_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  error TEXT NOT NULL DEFAULT '', version_id TEXT, retry_of TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_task_runs_project ON task_runs(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS continuity_entries (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, category TEXT NOT NULL,
+  subject TEXT NOT NULL, state TEXT NOT NULL DEFAULT '', first_episode INTEGER,
+  last_episode INTEGER, source_version_id TEXT, status TEXT NOT NULL DEFAULT 'active',
+  notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(source_version_id) REFERENCES draft_versions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_continuity_entries_project ON continuity_entries(project_id, category, subject);
 
 CREATE TABLE IF NOT EXISTS approval_records (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, gate_code TEXT NOT NULL,

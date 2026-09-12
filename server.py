@@ -67,6 +67,7 @@ def init_db() -> None:
             ("reverse_checks_json", "TEXT NOT NULL DEFAULT '{}'"), ("hard_errors_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("core_floor_pass", "INTEGER NOT NULL DEFAULT 0")):
             ensure_column("audit_reports", column, definition)
+        ensure_column("task_runs", "retry_of", "TEXT")
         for row in conn.execute("SELECT id,updated_at FROM projects").fetchall():
             seed_workspace(conn, row["id"], row["updated_at"])
 
@@ -87,15 +88,18 @@ def get_detail(conn: sqlite3.Connection, project_id: str) -> dict | None:
     sources = conn.execute("SELECT id,name,mime,byte_size,sha256,extraction_status,created_at FROM source_documents WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
     audits = conn.execute("SELECT id,version_id,score,status,summary,findings_json,sha256,created_at,audit_type,dimensions_json,reverse_checks_json,hard_errors_json,core_floor_pass FROM audit_reports WHERE project_id=? ORDER BY created_at DESC LIMIT 20", (project_id,)).fetchall()
     detectors = conn.execute("SELECT id,version_id,human_score,suspected_score,ai_score,report_name,sha256,status,created_at FROM detector_reports WHERE project_id=? ORDER BY created_at DESC LIMIT 20", (project_id,)).fetchall()
-    runs = conn.execute("SELECT id,task_type,instruction,status,stage,progress,output_preview,error,version_id,created_at,updated_at FROM task_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
+    runs = conn.execute("SELECT id,task_type,instruction,status,stage,progress,output_preview,error,version_id,retry_of,created_at,updated_at FROM task_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
     approvals = conn.execute("SELECT id,gate_code,decision,note,version_id,sha256,actor,created_at FROM approval_records WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
+    continuity = conn.execute("SELECT id,category,subject,state,first_episode,last_episode,source_version_id,status,notes,created_at,updated_at FROM continuity_entries WHERE project_id=? ORDER BY category,subject", (project_id,)).fetchall()
     latest_version_id = versions[0]["id"] if versions else None
     return {"project": project_summary(project), "profile": dict(profile) if profile else None,
             "assets": {r["asset_type"]: {"content": r["content"], "version": r["version"], "updatedAt": r["updated_at"]} for r in assets},
             "versions": [dict(r) for r in versions], "gates": [dict(r) for r in gates], "events": [dict(r) for r in events], "sources": [dict(r) for r in sources],
             "audits": [{**dict(r), "is_current": r["version_id"] == latest_version_id} for r in audits],
             "detectors": [{**dict(r), "is_current": r["version_id"] == latest_version_id} for r in detectors],
-            "runs": [dict(r) for r in runs], "approvals": [dict(r) for r in approvals], "latestVersionId": latest_version_id}
+            "runs": [dict(r) for r in runs], "approvals": [dict(r) for r in approvals],
+            "continuity": [{**dict(r), "is_current": not r["source_version_id"] or r["source_version_id"] == latest_version_id} for r in continuity],
+            "latestVersionId": latest_version_id}
 
 
 def parse_episode_number(token: str) -> int:
@@ -338,7 +342,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"; parts = self.parts(path)
-        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.5.0"}); return
+        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.6.0"}); return
         if path == "/api/projects":
             with db() as conn: rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
             self.send_json({"projects": [project_summary(r) for r in rows]}); return
@@ -415,7 +419,7 @@ class Handler(SimpleHTTPRequestHandler):
                     version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone(); detail = get_detail(conn, project_id)
                 if not version or not detail: self.send_json({"error": "请选择当前项目的正文版本"}, 400); return
                 run_id = "r-" + uuid.uuid4().hex[:12]; stamp = now_iso()
-                with db() as conn: conn.execute("INSERT INTO task_runs(id,project_id,task_type,instruction,status,stage,progress,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (run_id, project_id, "deep_audit", f"深审版本 {version['label']}", "running", "八维评分与五表反查", 35, stamp, stamp))
+                with db() as conn: conn.execute("INSERT INTO task_runs(id,project_id,task_type,instruction,status,stage,progress,version_id,retry_of,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (run_id, project_id, "deep_audit", f"深审版本 {version['label']}", "running", "八维评分与五表反查", 35, version_id, str(data.get("retryOf") or "") or None, stamp, stamp))
                 try: output = call_model(data.get("config") or {}, deep_audit_prompt(detail, version))
                 except ValueError as exc:
                     with db() as conn: conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,error=?,updated_at=? WHERE id=?", ("failed", "模型调用失败", 100, str(exc), now_iso(), run_id))
@@ -456,7 +460,7 @@ class Handler(SimpleHTTPRequestHandler):
                     if detail: detail["sourceTexts"] = [dict(x) for x in conn.execute("SELECT name,extracted_text FROM source_documents WHERE project_id=? AND extraction_status=? ORDER BY created_at", (project_id, "已提取")).fetchall()]
                 if not detail: self.send_json({"error": "项目不存在"}, 404); return
                 run_id = "r-" + uuid.uuid4().hex[:12]; started = now_iso()
-                with db() as conn: conn.execute("INSERT INTO task_runs(id,project_id,task_type,instruction,status,stage,progress,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (run_id, project_id, task_type, instruction, "running", "模型生成", 35, started, started))
+                with db() as conn: conn.execute("INSERT INTO task_runs(id,project_id,task_type,instruction,status,stage,progress,retry_of,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (run_id, project_id, task_type, instruction, "running", "模型生成", 35, str(data.get("retryOf") or "") or None, started, started))
                 try: output = call_model(data.get("config") or {}, model_prompt(detail, task_type, instruction))
                 except ValueError as exc:
                     with db() as conn: conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,error=?,updated_at=? WHERE id=?", ("failed", "模型调用失败", 100, str(exc), now_iso(), run_id))
@@ -504,6 +508,38 @@ class Handler(SimpleHTTPRequestHandler):
                         conn.execute("UPDATE project_profiles SET current_stage=?,status=?,updated_at=? WHERE project_id=?", (f"{gate_code} {GATES[idx][1]}", "已阻塞", stamp, project_id))
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "approval", f"{gate_code}{'批准' if decision == 'approve' else '驳回'}：{note or '无备注'}", stamp))
                 self.send_json({"approval": {"id": approval_id, "gate_code": gate_code, "decision": decision, "note": note, "version_id": version_id or None, "sha256": sha, "created_at": stamp}}, 201); return
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "continuity":
+                data = self.read_json(); project_id = parts[2]; category = str(data.get("category", "")).strip(); subject = str(data.get("subject", "")).strip(); state = str(data.get("state", "")).strip(); notes = str(data.get("notes", "")).strip()
+                if category not in {"character", "prop", "timeline", "permission", "location"} or not subject: self.send_json({"error": "连续性类别或主体无效"}, 400); return
+                try:
+                    first = int(data["firstEpisode"]) if str(data.get("firstEpisode", "")).strip() else None; last = int(data["lastEpisode"]) if str(data.get("lastEpisode", "")).strip() else None
+                except (TypeError, ValueError): self.send_json({"error": "集数必须是整数"}, 400); return
+                if first is not None and last is not None and last < first: self.send_json({"error": "结束集不能早于起始集"}, 400); return
+                entry_id = "c-" + uuid.uuid4().hex[:12]; stamp = now_iso()
+                with db() as conn:
+                    if not conn.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone(): self.send_json({"error": "项目不存在"}, 404); return
+                    conn.execute("INSERT INTO continuity_entries(id,project_id,category,subject,state,first_episode,last_episode,source_version_id,status,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (entry_id, project_id, category, subject, state, first, last, None, "active", notes, stamp, stamp))
+                    conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "continuity", f"新增连续性条目：{subject}", stamp))
+                self.send_json({"entry": {"id": entry_id, "category": category, "subject": subject, "state": state, "first_episode": first, "last_episode": last, "source_version_id": None, "status": "active", "notes": notes, "created_at": stamp, "updated_at": stamp}}, 201); return
+            if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["continuity", "extract"]:
+                data = self.read_json(); project_id = parts[2]; version_id = str(data.get("versionId", ""))
+                with db() as conn: version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone()
+                if not version: self.send_json({"error": "请选择当前项目的正文版本"}, 400); return
+                analysis = analyze_script(version["content"]); char_eps, location_eps = {}, {}
+                for episode in analysis["episodes"]:
+                    for scene in episode["scenes"]:
+                        for name in scene["characters"]: char_eps.setdefault(name, set()).add(episode["number"])
+                        location_match = re.match(r"^\d+\s*[-－—]\s*\d+\s+\S+\s+\S+\s+(.+)$", scene["heading"]); location = location_match.group(1) if location_match else scene["heading"]
+                        location_eps.setdefault(location, set()).add(episode["number"])
+                stamp = now_iso(); entries = []
+                with db() as conn:
+                    conn.execute("DELETE FROM continuity_entries WHERE project_id=? AND source_version_id=? AND category IN ('character','location')", (project_id, version_id))
+                    for category, mapping in (("character", char_eps), ("location", location_eps)):
+                        for subject, eps in mapping.items():
+                            entry_id = "c-" + uuid.uuid4().hex[:12]; first, last = min(eps), max(eps); state = f"正文识别：出现于{len(eps)}集"
+                            conn.execute("INSERT INTO continuity_entries(id,project_id,category,subject,state,first_episode,last_episode,source_version_id,status,notes,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (entry_id, project_id, category, subject, state, first, last, version_id, "auto", "由场景标题与人物行自动提取，需人工补充状态变化", stamp, stamp)); entries.append(entry_id)
+                    conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "continuity", f"从{version['label']}提取连续性账本：{len(entries)}条", stamp))
+                self.send_json({"ok": True, "count": len(entries), "versionId": version_id}, 201); return
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "sources":
                 data = self.read_json(); name = str(data.get("name", "")).strip(); mime = str(data.get("mime", "application/octet-stream"))[:120]; encoded = str(data.get("dataBase64", ""))
                 if not name or len(name) > 180 or not encoded: self.send_json({"error": "文件名和文件内容不能为空"}, 400); return
@@ -532,6 +568,16 @@ class Handler(SimpleHTTPRequestHandler):
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (parts[2], "asset", f"更新项目资料：{parts[4]}", stamp)); conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (stamp, parts[2])); row = conn.execute("SELECT content,version,updated_at FROM story_assets WHERE project_id=? AND asset_type=?", (parts[2], parts[4])).fetchone()
                 self.send_json({"asset": dict(row)}); return
         except (ValueError, json.JSONDecodeError) as exc: self.send_json({"error": f"请求格式错误：{exc}"}, 400); return
+        self.send_json({"error": "接口不存在"}, 404)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path.rstrip("/"); parts = self.parts(path)
+        if len(parts) == 3 and parts[:2] == ["api", "continuity"]:
+            with db() as conn:
+                row = conn.execute("SELECT project_id,subject FROM continuity_entries WHERE id=?", (parts[2],)).fetchone()
+                if not row: self.send_json({"error": "连续性条目不存在"}, 404); return
+                conn.execute("DELETE FROM continuity_entries WHERE id=?", (parts[2],)); conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (row["project_id"], "continuity", f"删除连续性条目：{row['subject']}", now_iso()))
+            self.send_json({"ok": True}); return
         self.send_json({"error": "接口不存在"}, 404)
 
 
