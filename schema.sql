@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS project_profiles (
   submission_start INTEGER NOT NULL DEFAULT 1, submission_end INTEGER NOT NULL DEFAULT 10,
   opening_template TEXT NOT NULL DEFAULT '老王模板', current_stage TEXT NOT NULL DEFAULT 'G0 立项与参数',
   progress INTEGER NOT NULL DEFAULT 10, status TEXT NOT NULL DEFAULT '待立项', updated_at TEXT NOT NULL,
+  duration_min_seconds INTEGER NOT NULL DEFAULT 120, duration_max_seconds INTEGER NOT NULL DEFAULT 180,
+  calibration_threshold INTEGER NOT NULL DEFAULT 85, quality_threshold INTEGER NOT NULL DEFAULT 90,
+  zhuque_threshold REAL NOT NULL DEFAULT 85, one_scene_each INTEGER NOT NULL DEFAULT 1,
+  zhuque_required INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 CREATE TABLE IF NOT EXISTS story_assets (
@@ -74,6 +78,11 @@ CREATE TABLE IF NOT EXISTS audit_reports (
   findings_json TEXT NOT NULL DEFAULT '[]',
   sha256 TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  audit_type TEXT NOT NULL DEFAULT 'structural',
+  dimensions_json TEXT NOT NULL DEFAULT '{}',
+  reverse_checks_json TEXT NOT NULL DEFAULT '{}',
+  hard_errors_json TEXT NOT NULL DEFAULT '[]',
+  core_floor_pass INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
   FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE CASCADE
 );
@@ -95,6 +104,25 @@ CREATE TABLE IF NOT EXISTS detector_reports (
   FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_detector_reports_project ON detector_reports(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS task_runs (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_type TEXT NOT NULL,
+  instruction TEXT NOT NULL, status TEXT NOT NULL, stage TEXT NOT NULL,
+  progress INTEGER NOT NULL DEFAULT 0, output_preview TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '', version_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_runs_project ON task_runs(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS approval_records (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, gate_code TEXT NOT NULL,
+  decision TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', version_id TEXT,
+  sha256 TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT 'operator', created_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_approval_records_project ON approval_records(project_id, created_at DESC);
 
 INSERT OR IGNORE INTO project_profiles(project_id,genre,current_stage,progress,status,updated_at)
 SELECT id,'待设定','G0 立项与参数',10,'待立项',updated_at FROM projects;

@@ -35,11 +35,14 @@ def db() -> sqlite3.Connection:
 def seed_workspace(conn: sqlite3.Connection, project_id: str, stamp: str, profile: dict | None = None) -> None:
     p = profile or {}
     conn.execute("""INSERT OR IGNORE INTO project_profiles
-        (project_id,region,medium,genre,total_episodes,submission_start,submission_end,opening_template,current_stage,progress,status,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (project_id,region,medium,genre,total_episodes,submission_start,submission_end,opening_template,current_stage,progress,status,updated_at,duration_min_seconds,duration_max_seconds,calibration_threshold,quality_threshold,zhuque_threshold,one_scene_each,zhuque_required)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (project_id, p.get("region", "国内"), p.get("medium", "AI漫剧"), p.get("genre", "待设定"),
          int(p.get("totalEpisodes", 60)), int(p.get("submissionStart", 1)), int(p.get("submissionEnd", 10)),
-         p.get("openingTemplate", "老王模板"), "G0 立项与参数", 10, "待立项", stamp))
+         p.get("openingTemplate", "老王模板"), "G0 立项与参数", 10, "待立项", stamp,
+         int(p.get("durationMin", 120)), int(p.get("durationMax", 180)), int(p.get("calibrationThreshold", 85)),
+         int(p.get("qualityThreshold", 90)), float(p.get("zhuqueThreshold", 85)), 0 if p.get("oneSceneEach") is False else 1,
+         0 if p.get("zhuqueRequired") is False else 1))
     for index, (code, title) in enumerate(GATES):
         conn.execute("INSERT OR IGNORE INTO gates(project_id,gate_code,title,status,note,updated_at) VALUES(?,?,?,?,?,?)",
                      (project_id, code, title, "current" if index == 0 else "pending", "等待参数确认" if index == 0 else "未开始", stamp))
@@ -50,6 +53,20 @@ def seed_workspace(conn: sqlite3.Connection, project_id: str, stamp: str, profil
 def init_db() -> None:
     with db() as conn:
         conn.executescript((ROOT / "schema.sql").read_text(encoding="utf-8"))
+        def ensure_column(table: str, column: str, definition: str) -> None:
+            names = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in names: conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for column, definition in (
+            ("duration_min_seconds", "INTEGER NOT NULL DEFAULT 120"), ("duration_max_seconds", "INTEGER NOT NULL DEFAULT 180"),
+            ("calibration_threshold", "INTEGER NOT NULL DEFAULT 85"), ("quality_threshold", "INTEGER NOT NULL DEFAULT 90"),
+            ("zhuque_threshold", "REAL NOT NULL DEFAULT 85"), ("one_scene_each", "INTEGER NOT NULL DEFAULT 1"),
+            ("zhuque_required", "INTEGER NOT NULL DEFAULT 1")):
+            ensure_column("project_profiles", column, definition)
+        for column, definition in (
+            ("audit_type", "TEXT NOT NULL DEFAULT 'structural'"), ("dimensions_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("reverse_checks_json", "TEXT NOT NULL DEFAULT '{}'"), ("hard_errors_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("core_floor_pass", "INTEGER NOT NULL DEFAULT 0")):
+            ensure_column("audit_reports", column, definition)
         for row in conn.execute("SELECT id,updated_at FROM projects").fetchall():
             seed_workspace(conn, row["id"], row["updated_at"])
 
@@ -68,18 +85,38 @@ def get_detail(conn: sqlite3.Connection, project_id: str) -> dict | None:
     gates = conn.execute("SELECT gate_code,title,status,note,updated_at FROM gates WHERE project_id=? ORDER BY gate_code", (project_id,)).fetchall()
     events = conn.execute("SELECT kind,message,created_at FROM activity_logs WHERE project_id=? ORDER BY id DESC LIMIT 50", (project_id,)).fetchall()
     sources = conn.execute("SELECT id,name,mime,byte_size,sha256,extraction_status,created_at FROM source_documents WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
-    audits = conn.execute("SELECT id,version_id,score,status,summary,findings_json,sha256,created_at FROM audit_reports WHERE project_id=? ORDER BY created_at DESC LIMIT 20", (project_id,)).fetchall()
+    audits = conn.execute("SELECT id,version_id,score,status,summary,findings_json,sha256,created_at,audit_type,dimensions_json,reverse_checks_json,hard_errors_json,core_floor_pass FROM audit_reports WHERE project_id=? ORDER BY created_at DESC LIMIT 20", (project_id,)).fetchall()
     detectors = conn.execute("SELECT id,version_id,human_score,suspected_score,ai_score,report_name,sha256,status,created_at FROM detector_reports WHERE project_id=? ORDER BY created_at DESC LIMIT 20", (project_id,)).fetchall()
+    runs = conn.execute("SELECT id,task_type,instruction,status,stage,progress,output_preview,error,version_id,created_at,updated_at FROM task_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
+    approvals = conn.execute("SELECT id,gate_code,decision,note,version_id,sha256,actor,created_at FROM approval_records WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
+    latest_version_id = versions[0]["id"] if versions else None
     return {"project": project_summary(project), "profile": dict(profile) if profile else None,
             "assets": {r["asset_type"]: {"content": r["content"], "version": r["version"], "updatedAt": r["updated_at"]} for r in assets},
             "versions": [dict(r) for r in versions], "gates": [dict(r) for r in gates], "events": [dict(r) for r in events], "sources": [dict(r) for r in sources],
-            "audits": [dict(r) for r in audits], "detectors": [dict(r) for r in detectors]}
+            "audits": [{**dict(r), "is_current": r["version_id"] == latest_version_id} for r in audits],
+            "detectors": [{**dict(r), "is_current": r["version_id"] == latest_version_id} for r in detectors],
+            "runs": [dict(r) for r in runs], "approvals": [dict(r) for r in approvals], "latestVersionId": latest_version_id}
+
+
+def parse_episode_number(token: str) -> int:
+    if token.isdigit(): return int(token)
+    nums = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if token == "十": return 10
+    if "百" in token:
+        left, right = (token.split("百", 1) + [""])[:2]
+        return nums.get(left, 1) * 100 + parse_episode_number(right or "0")
+    if "十" in token:
+        left, right = (token.split("十", 1) + [""])[:2]
+        return (nums.get(left, 1) if left else 1) * 10 + (nums.get(right, 0) if right else 0)
+    value = 0
+    for char in token: value = value * 10 + nums.get(char, 0)
+    return value
 
 
 def audit_text(content: str, start: int, end: int) -> dict:
     findings: list[dict] = []
     def add(level: str, code: str, message: str) -> None: findings.append({"level": level, "code": code, "message": message})
-    episodes = [int(x) for x in re.findall(r"^\s*第\s*(\d+)\s*集\s*$", content, re.M)]
+    episodes = [parse_episode_number(x) for x in re.findall(r"^\s*第\s*([0-9一二三四五六七八九十百〇零两]+)\s*集\s*$", content, re.M)]
     missing = [x for x in range(start, end + 1) if x not in episodes]
     outside = sorted(set(x for x in episodes if x < start or x > end))
     if missing: add("error", "missing_episode", "缺少集标题：第" + "、".join(map(str, missing)) + "集")
@@ -101,6 +138,103 @@ def audit_text(content: str, start: int, end: int) -> dict:
     if len(content.strip()) < 800: add("warning", "short_content", "正文过短，无法完成有效结构审计")
     errors = sum(1 for x in findings if x["level"] == "error"); warnings = len(findings) - errors; score = max(0, 100 - errors * 12 - warnings * 4)
     return {"score": score, "status": "通过" if score >= 90 and errors == 0 else "需修复", "summary": f"识别{len(episodes)}个集标题、{scenes}个场次；{errors}项错误、{warnings}项提醒。", "findings": findings}
+
+
+DIMENSIONS = {"premise": 15, "causality": 15, "characters": 20, "dialogue": 15,
+              "pacing": 10, "emotion": 10, "performance": 10, "continuity": 5}
+
+
+def parse_json_object(text: str) -> dict:
+    clean = re.sub(r"^```(?:json)?\s*", "", str(text or "").strip(), flags=re.I)
+    clean = re.sub(r"```\s*$", "", clean).strip()
+    start, end = clean.find("{"), clean.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("深审模型未返回JSON对象")
+    return json.loads(clean[start:end + 1])
+
+
+def normalize_deep_audit(raw: dict, threshold: float) -> dict:
+    dimensions, total = {}, 0.0
+    for key, maximum in DIMENSIONS.items():
+        source = (raw.get("dimensions") or {}).get(key) or {}
+        try: score = float(source.get("score", 0))
+        except (TypeError, ValueError): score = 0
+        score = max(0, min(maximum, score)); total += score
+        dimensions[key] = {"score": score, "max": maximum,
+                           "evidence": list(source.get("evidence") or [])[:6],
+                           "deduction": str(source.get("deduction") or "")}
+    total = round(total, 1)
+    hard_errors = list(raw.get("hard_errors") or [])[:50]
+    reverse_source = raw.get("reverse_checks") if isinstance(raw.get("reverse_checks"), dict) else {}
+    reverse_checks = {}
+    for key in ("prop_chain", "permission_license", "adjacent_transition", "presence_speaker", "packaging_identity"):
+        source = reverse_source.get(key) or {}; state = source.get("status") if source.get("status") in {"pass", "fail", "not_applicable"} else "fail"
+        reverse_checks[key] = {"status": state, "evidence": list(source.get("evidence") or [])[:8],
+                               "problem": str(source.get("problem") or ("模型漏交该反查表" if key not in reverse_source else ""))}
+    core_floor = dimensions["causality"]["score"] >= 12 and dimensions["characters"]["score"] >= 16 and dimensions["dialogue"]["score"] >= 12
+    reverse_pass = all(x["status"] in {"pass", "not_applicable"} for x in reverse_checks.values())
+    status = "通过" if total >= threshold and core_floor and reverse_pass and not hard_errors else "需修复"
+    findings = [{"level": "error", "code": str(x.get("type") or "hard_error"),
+                 "message": f"{x.get('episode','')}{('/' + str(x.get('scene'))) if x.get('scene') else ''} {x.get('evidence') or x.get('problem') or '硬错误'}".strip()}
+                for x in hard_errors if isinstance(x, dict)]
+    findings.extend({"level": "error", "code": f"reverse_{key}", "message": value["problem"] or f"{key}反查未通过"}
+                    for key, value in reverse_checks.items() if value["status"] == "fail")
+    return {"score": total, "status": status,
+            "summary": str(raw.get("summary") or f"AI内部八维深审{total}分；硬错误{len(hard_errors)}项。"),
+            "findings": findings, "dimensions": dimensions, "reverseChecks": reverse_checks,
+            "hardErrors": hard_errors, "coreFloorPass": core_floor}
+
+
+def deep_audit_prompt(data: dict, version: sqlite3.Row) -> str:
+    return f'''你是严格的中文短剧SOP内部审读员。只审读给定版本，不改稿，不因目标分倒填。必须输出单个JSON对象，不要Markdown。
+项目：{data['project']['name']}
+路线：{data['project']['route']}
+总集数：{data.get('profile', {}).get('total_episodes', 60)}
+本次正文：第{version['range_start']}—{version['range_end']}集
+门槛：{data.get('profile', {}).get('quality_threshold', 90)}
+
+按八维评分：premise满15；causality满15且底线12；characters满20且底线16；dialogue满15且底线12；pacing满10；emotion满10；performance满10；continuity满5。每维返回score、evidence数组（必须含集号/场次/短原文锚点）、deduction。
+按五张反查表返回reverse_checks：prop_chain、permission_license、adjacent_transition、presence_speaker、packaging_identity；每项返回status(pass/fail/not_applicable)、evidence数组、problem。另查人物所知、时间空间、伤势、金额期限、重生/异能边界、反派利益、专业常识。
+硬错误放hard_errors数组，每项含episode、scene、type、evidence、minimal_fix、affected_later。summary必须说明最大优点和首要缺陷。
+JSON结构：{{"dimensions":{{"premise":{{"score":0,"evidence":[],"deduction":""}}}},"reverse_checks":{{}},"hard_errors":[],"summary":""}}
+
+项目资料：
+梗概：{data.get('assets', {}).get('synopsis', {}).get('content', '无')}
+人物：{data.get('assets', {}).get('characters', {}).get('content', '无')}
+世界观：{data.get('assets', {}).get('world', {}).get('content', '无')}
+卡点：{data.get('assets', {}).get('beat_matrix', {}).get('content', '无')}
+
+正文：
+{version['content']}'''
+
+
+def analyze_script(content: str) -> dict:
+    episodes, characters, locations = [], {}, {}
+    current_episode = current_scene = None
+    for index, raw_line in enumerate(content.splitlines(), 1):
+        line = raw_line.strip()
+        ep = re.match(r"^第\s*([0-9一二三四五六七八九十百〇零两]+)\s*集$", line)
+        if ep:
+            current_episode = {"number": parse_episode_number(ep.group(1)), "line": index, "scenes": []}
+            episodes.append(current_episode); current_scene = None; continue
+        scene = re.match(r"^(\d+)\s*[-－—]\s*(\d+)\s+(.+)$", line)
+        if scene:
+            current_scene = {"episode": current_episode["number"] if current_episode else int(scene.group(1)),
+                             "number": int(scene.group(2)), "heading": line, "line": index, "characters": []}
+            if current_episode is None:
+                current_episode = {"number": int(scene.group(1)), "line": index, "scenes": []}; episodes.append(current_episode)
+            current_episode["scenes"].append(current_scene)
+            bits = scene.group(3).split(); location = " ".join(bits[2:]) if len(bits) > 2 else scene.group(3)
+            locations[location] = locations.get(location, 0) + 1; continue
+        cast = re.match(r"^人物[：:]\s*(.+)$", line)
+        if cast and current_scene:
+            names = [x.strip() for x in re.split(r"[、，,/／]", cast.group(1)) if x.strip()]
+            current_scene["characters"] = names
+            for name in names: characters[name] = characters.get(name, 0) + 1
+    return {"episodes": episodes, "episodeCount": len(episodes),
+            "sceneCount": sum(len(x["scenes"]) for x in episodes),
+            "characters": [{"name": k, "scenes": v} for k, v in sorted(characters.items(), key=lambda x: -x[1])],
+            "locations": [{"name": k, "scenes": v} for k, v in sorted(locations.items(), key=lambda x: -x[1])]}
 
 
 def model_endpoint(base: str, wire: str) -> str:
@@ -204,7 +338,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"; parts = self.parts(path)
-        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.4.0"}); return
+        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.5.0"}); return
         if path == "/api/projects":
             with db() as conn: rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
             self.send_json({"projects": [project_summary(r) for r in rows]}); return
@@ -214,6 +348,9 @@ class Handler(SimpleHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "versions"] and parts[3] == "content":
             with db() as conn: row = conn.execute("SELECT * FROM draft_versions WHERE id=?", (parts[2],)).fetchone()
             self.send_json({"version": dict(row)} if row else {"error": "版本不存在"}, 200 if row else 404); return
+        if len(parts) == 4 and parts[:2] == ["api", "versions"] and parts[3] == "analysis":
+            with db() as conn: row = conn.execute("SELECT id,label,content,sha256 FROM draft_versions WHERE id=?", (parts[2],)).fetchone()
+            self.send_json({"version": {"id": row["id"], "label": row["label"], "sha256": row["sha256"]}, "analysis": analyze_script(row["content"])} if row else {"error": "版本不存在"}, 200 if row else 404); return
         if len(parts) == 4 and parts[:2] == ["api", "sources"] and parts[3] == "content":
             with db() as conn: row = conn.execute("SELECT id,name,mime,byte_size,sha256,extracted_text,extraction_status,created_at FROM source_documents WHERE id=?", (parts[2],)).fetchone()
             self.send_json({"source": dict(row)} if row else {"error": "素材不存在"}, 200 if row else 404); return
@@ -238,6 +375,9 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/projects":
                 data = self.read_json(); name = str(data.get("name", "")).strip(); route = str(data.get("route", "完全原创 / 市场参考")).strip()
                 if not name or len(name) > 120: self.send_json({"error": "项目名称不能为空且不超过120字"}, 400); return
+                min_duration, max_duration = int(data.get("durationMin", 120)), int(data.get("durationMax", 180)); quality, zhuque = float(data.get("qualityThreshold", 90)), float(data.get("zhuqueThreshold", 85))
+                if min_duration < 30 or max_duration < min_duration or max_duration > 600: self.send_json({"error": "单集时长范围无效"}, 400); return
+                if not (0 <= quality <= 100 and 0 <= zhuque <= 100): self.send_json({"error": "质量和朱雀门槛必须在0—100之间"}, 400); return
                 project_id = "p-" + uuid.uuid4().hex[:12]; stamp = now_iso(); note = "新项目 · 待立项"
                 with db() as conn:
                     conn.execute("INSERT INTO projects(id,name,route,note,created_at,updated_at) VALUES(?,?,?,?,?,?)", (project_id, name, route, note, stamp, stamp)); seed_workspace(conn, project_id, stamp, data)
@@ -266,9 +406,30 @@ class Handler(SimpleHTTPRequestHandler):
                 if not version: self.send_json({"error": "请选择当前项目的正文版本"}, 400); return
                 report = audit_text(version["content"], version["range_start"], version["range_end"]); report_id = "a-" + uuid.uuid4().hex[:12]; stamp = now_iso()
                 with db() as conn:
-                    conn.execute("INSERT INTO audit_reports(id,project_id,version_id,score,status,summary,findings_json,sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (report_id, project_id, version_id, report["score"], report["status"], report["summary"], json.dumps(report["findings"], ensure_ascii=False), version["sha256"], stamp))
+                    conn.execute("INSERT INTO audit_reports(id,project_id,version_id,score,status,summary,findings_json,sha256,created_at,audit_type,dimensions_json,reverse_checks_json,hard_errors_json,core_floor_pass) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (report_id, project_id, version_id, report["score"], report["status"], report["summary"], json.dumps(report["findings"], ensure_ascii=False), version["sha256"], stamp, "structural", "{}", "{}", "[]", 1 if report["status"] == "通过" else 0))
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "audit", f"结构审计：{report['score']}分，{report['status']}", stamp))
                 self.send_json({"report": {"id": report_id, "version_id": version_id, "sha256": version["sha256"], "created_at": stamp, **report}}, 201); return
+            if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["audits", "deep"]:
+                data = self.read_json(); project_id = parts[2]; version_id = str(data.get("versionId", ""))
+                with db() as conn:
+                    version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone(); detail = get_detail(conn, project_id)
+                if not version or not detail: self.send_json({"error": "请选择当前项目的正文版本"}, 400); return
+                run_id = "r-" + uuid.uuid4().hex[:12]; stamp = now_iso()
+                with db() as conn: conn.execute("INSERT INTO task_runs(id,project_id,task_type,instruction,status,stage,progress,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (run_id, project_id, "deep_audit", f"深审版本 {version['label']}", "running", "八维评分与五表反查", 35, stamp, stamp))
+                try: output = call_model(data.get("config") or {}, deep_audit_prompt(detail, version))
+                except ValueError as exc:
+                    with db() as conn: conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,error=?,updated_at=? WHERE id=?", ("failed", "模型调用失败", 100, str(exc), now_iso(), run_id))
+                    self.send_json({"error": str(exc), "runId": run_id}, 502); return
+                try: report = normalize_deep_audit(parse_json_object(output), float((detail.get("profile") or {}).get("quality_threshold", 90)))
+                except (ValueError, json.JSONDecodeError) as exc:
+                    with db() as conn: conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,error=?,output_preview=?,updated_at=? WHERE id=?", ("failed", "结果解析失败", 100, str(exc), output[:3500], now_iso(), run_id))
+                    self.send_json({"error": str(exc), "runId": run_id}, 422); return
+                report_id = "a-" + uuid.uuid4().hex[:12]; done = now_iso()
+                with db() as conn:
+                    conn.execute("INSERT INTO audit_reports(id,project_id,version_id,score,status,summary,findings_json,sha256,created_at,audit_type,dimensions_json,reverse_checks_json,hard_errors_json,core_floor_pass) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (report_id, project_id, version_id, report["score"], report["status"], report["summary"], json.dumps(report["findings"], ensure_ascii=False), version["sha256"], done, "deep_ai", json.dumps(report["dimensions"], ensure_ascii=False), json.dumps(report["reverseChecks"], ensure_ascii=False), json.dumps(report["hardErrors"], ensure_ascii=False), 1 if report["coreFloorPass"] else 0))
+                    conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,output_preview=?,updated_at=? WHERE id=?", ("succeeded", "等待人工确认", 100, report["summary"][:3500], done, run_id))
+                    conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "audit", f"AI内部深审：{report['score']}分，{report['status']}；硬错误{len(report['hardErrors'])}项", done))
+                self.send_json({"report": {"id": report_id, "version_id": version_id, "sha256": version["sha256"], "created_at": done, "audit_type": "deep_ai", **report}, "runId": run_id}, 201); return
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "detectors":
                 data = self.read_json(); project_id = parts[2]; version_id = str(data.get("versionId", "")); human = float(data.get("humanScore", -1)); suspected = float(data.get("suspectedScore", 0)); ai = float(data.get("aiScore", 0)); name = str(data.get("reportName", "")).strip(); encoded = str(data.get("dataBase64", ""))
                 if any(x < 0 or x > 100 for x in (human, suspected, ai)): self.send_json({"error": "检测指标必须在0—100之间"}, 400); return
@@ -276,9 +437,13 @@ class Handler(SimpleHTTPRequestHandler):
                 try: raw = base64.b64decode(encoded, validate=True)
                 except Exception: self.send_json({"error": "报告截图编码无效"}, 400); return
                 if len(raw) > 5 * 1024 * 1024: self.send_json({"error": "报告截图不能超过5MB"}, 413); return
-                with db() as conn: version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone()
+                if not (raw.startswith(b"\x89PNG\r\n\x1a\n") or raw.startswith(b"\xff\xd8\xff")): self.send_json({"error": "报告文件必须是真实PNG或JPEG图片"}, 400); return
+                with db() as conn:
+                    version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone()
+                    profile = conn.execute("SELECT zhuque_threshold FROM project_profiles WHERE project_id=?", (project_id,)).fetchone()
                 if not version: self.send_json({"error": "请选择当前项目的正文版本"}, 400); return
-                report_id = "z-" + uuid.uuid4().hex[:12]; stamp = now_iso(); safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name); folder = STORAGE_ROOT / project_id / "detectors" / report_id; folder.mkdir(parents=True, exist_ok=True); path = folder / safe_name; path.write_bytes(raw); object_key = str(path.relative_to(ROOT)).replace("\\", "/"); status = "通过" if human >= 85 else "未通过"
+                threshold = float(profile["zhuque_threshold"] if profile else 85)
+                report_id = "z-" + uuid.uuid4().hex[:12]; stamp = now_iso(); safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name); folder = STORAGE_ROOT / project_id / "detectors" / report_id; folder.mkdir(parents=True, exist_ok=True); path = folder / safe_name; path.write_bytes(raw); object_key = str(path.relative_to(ROOT)).replace("\\", "/"); status = "通过" if human >= threshold else "未通过"
                 with db() as conn:
                     conn.execute("INSERT INTO detector_reports(id,project_id,version_id,human_score,suspected_score,ai_score,report_object_key,report_name,sha256,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (report_id, project_id, version_id, human, suspected, ai, object_key, name, version["sha256"], status, stamp))
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "detector", f"朱雀报告：人工特征{human}%，{status}", stamp))
@@ -290,18 +455,55 @@ class Handler(SimpleHTTPRequestHandler):
                     detail = get_detail(conn, project_id)
                     if detail: detail["sourceTexts"] = [dict(x) for x in conn.execute("SELECT name,extracted_text FROM source_documents WHERE project_id=? AND extraction_status=? ORDER BY created_at", (project_id, "已提取")).fetchall()]
                 if not detail: self.send_json({"error": "项目不存在"}, 404); return
+                run_id = "r-" + uuid.uuid4().hex[:12]; started = now_iso()
+                with db() as conn: conn.execute("INSERT INTO task_runs(id,project_id,task_type,instruction,status,stage,progress,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (run_id, project_id, task_type, instruction, "running", "模型生成", 35, started, started))
                 try: output = call_model(data.get("config") or {}, model_prompt(detail, task_type, instruction))
-                except ValueError as exc: self.send_json({"error": str(exc)}, 502); return
+                except ValueError as exc:
+                    with db() as conn: conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,error=?,updated_at=? WHERE id=?", ("failed", "模型调用失败", 100, str(exc), now_iso(), run_id))
+                    self.send_json({"error": str(exc), "runId": run_id}, 502); return
                 stamp = now_iso()
+                version_id = None
                 with db() as conn:
                     if task_type in ASSET_TYPES:
                         conn.execute("""INSERT INTO story_assets(project_id,asset_type,content,version,updated_at) VALUES(?,?,?,1,?) ON CONFLICT(project_id,asset_type) DO UPDATE SET content=excluded.content,version=story_assets.version+1,updated_at=excluded.updated_at""", (project_id, task_type, output, stamp))
                     elif task_type == "draft":
-                        vid = "v-" + uuid.uuid4().hex[:12]; digest = hashlib.sha256(output.encode()).hexdigest(); start = int(data.get("rangeStart", detail.get("profile", {}).get("submission_start", 1))); end = int(data.get("rangeEnd", detail.get("profile", {}).get("submission_end", 10)))
-                        conn.execute("INSERT INTO draft_versions(id,project_id,label,range_start,range_end,content,sha256,source,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (vid, project_id, str(data.get("label", f"模型稿 {stamp[:16]}")), start, end, output, digest, "模型生成", "待人工审校", stamp))
+                        version_id = "v-" + uuid.uuid4().hex[:12]; digest = hashlib.sha256(output.encode()).hexdigest(); start = int(data.get("rangeStart", detail.get("profile", {}).get("submission_start", 1))); end = int(data.get("rangeEnd", detail.get("profile", {}).get("submission_end", 10)))
+                        conn.execute("INSERT INTO draft_versions(id,project_id,label,range_start,range_end,content,sha256,source,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (version_id, project_id, str(data.get("label", f"模型稿 {stamp[:16]}")), start, end, output, digest, "模型生成", "待人工审校", stamp))
+                    conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,output_preview=?,version_id=?,updated_at=? WHERE id=?", ("succeeded", "等待人工审校" if task_type == "draft" else "已保存", 100, output[:3500], version_id, stamp, run_id))
                     message = f"模型任务完成：{task_type}" + (("\n" + output[:3500]) if task_type == "reply" else "")
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "model", message, stamp)); conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (stamp, project_id))
-                self.send_json({"ok": True, "output": output, "taskType": task_type}); return
+                self.send_json({"ok": True, "output": output, "taskType": task_type, "runId": run_id, "versionId": version_id}); return
+            if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3] == "gates":
+                data = self.read_json(); project_id, gate_code = parts[2], parts[4]; decision = str(data.get("decision", "")); note = str(data.get("note", "")).strip(); version_id = str(data.get("versionId", ""))
+                if gate_code not in {x[0] for x in GATES} or decision not in {"approve", "reject"}: self.send_json({"error": "闸门或决定无效"}, 400); return
+                with db() as conn:
+                    detail = get_detail(conn, project_id); version = conn.execute("SELECT id,sha256 FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone() if version_id else None
+                if not detail: self.send_json({"error": "项目不存在"}, 404); return
+                if decision == "approve" and gate_code in {"G2", "G3", "G4", "G5", "G6"} and not version: self.send_json({"error": "该阶段批准必须绑定正文版本"}, 400); return
+                if decision == "approve" and version and version["id"] != detail.get("latestVersionId"): self.send_json({"error": "只能批准当前最新正文版本"}, 409); return
+                if decision == "approve" and gate_code == "G4":
+                    ok = any(x["audit_type"] == "deep_ai" and x["version_id"] == version_id and x["status"] == "通过" and int(x["core_floor_pass"]) == 1 for x in detail["audits"])
+                    if not ok: self.send_json({"error": "G4需要当前版本AI内部深审达到项目门槛、核心底线通过且硬错误为0"}, 409); return
+                if decision == "approve" and gate_code == "G5" and int((detail.get("profile") or {}).get("zhuque_required", 1)) != 0:
+                    threshold = float((detail.get("profile") or {}).get("zhuque_threshold", 85)); ok = any(x["version_id"] == version_id and x["status"] == "通过" and float(x["human_score"]) >= threshold for x in detail["detectors"])
+                    if not ok: self.send_json({"error": f"G5需要当前版本朱雀人工特征达到{threshold:g}%并保存真实报告"}, 409); return
+                if decision == "approve" and gate_code == "G6":
+                    passed = {x["gate_code"] for x in detail["gates"] if x["status"] == "passed"}
+                    if "G4" not in passed or (int((detail.get("profile") or {}).get("zhuque_required", 1)) != 0 and "G5" not in passed): self.send_json({"error": "G6需要先通过内容终审和适用的朱雀门禁"}, 409); return
+                approval_id = "ap-" + uuid.uuid4().hex[:12]; stamp = now_iso(); status = "passed" if decision == "approve" else "blocked"; sha = version["sha256"] if version else ""
+                with db() as conn:
+                    conn.execute("INSERT INTO approval_records(id,project_id,gate_code,decision,note,version_id,sha256,actor,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (approval_id, project_id, gate_code, decision, note, version_id or None, sha, "operator", stamp))
+                    conn.execute("UPDATE gates SET status=?,note=?,updated_at=? WHERE project_id=? AND gate_code=?", (status, note or status, stamp, project_id, gate_code))
+                    if decision == "approve":
+                        idx = next(i for i, x in enumerate(GATES) if x[0] == gate_code)
+                        if idx < len(GATES) - 1: conn.execute("UPDATE gates SET status=?,note=?,updated_at=? WHERE project_id=? AND gate_code=? AND status<>?", ("current", "等待处理", stamp, project_id, GATES[idx + 1][0], "passed"))
+                        next_gate = GATES[min(idx + 1, len(GATES) - 1)]
+                        conn.execute("UPDATE project_profiles SET current_stage=?,progress=?,status=?,updated_at=? WHERE project_id=?", (f"{next_gate[0]} {next_gate[1]}", 100 if gate_code == "G6" else round(((idx + 1) / 6) * 100), "已归档" if gate_code == "G6" else "等待人工处理", stamp, project_id))
+                    else:
+                        idx = next(i for i, x in enumerate(GATES) if x[0] == gate_code)
+                        conn.execute("UPDATE project_profiles SET current_stage=?,status=?,updated_at=? WHERE project_id=?", (f"{gate_code} {GATES[idx][1]}", "已阻塞", stamp, project_id))
+                    conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "approval", f"{gate_code}{'批准' if decision == 'approve' else '驳回'}：{note or '无备注'}", stamp))
+                self.send_json({"approval": {"id": approval_id, "gate_code": gate_code, "decision": decision, "note": note, "version_id": version_id or None, "sha256": sha, "created_at": stamp}}, 201); return
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "sources":
                 data = self.read_json(); name = str(data.get("name", "")).strip(); mime = str(data.get("mime", "application/octet-stream"))[:120]; encoded = str(data.get("dataBase64", ""))
                 if not name or len(name) > 180 or not encoded: self.send_json({"error": "文件名和文件内容不能为空"}, 400); return
