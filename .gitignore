@@ -8,6 +8,7 @@ workbench.sqlite3-*
 Thumbs.db
 .vscode/
 .idea/
+__pycache__/
 
 # Local secrets
 .env
