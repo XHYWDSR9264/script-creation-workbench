@@ -60,7 +60,8 @@ def init_db() -> None:
             ("duration_min_seconds", "INTEGER NOT NULL DEFAULT 120"), ("duration_max_seconds", "INTEGER NOT NULL DEFAULT 180"),
             ("calibration_threshold", "INTEGER NOT NULL DEFAULT 85"), ("quality_threshold", "INTEGER NOT NULL DEFAULT 90"),
             ("zhuque_threshold", "REAL NOT NULL DEFAULT 85"), ("one_scene_each", "INTEGER NOT NULL DEFAULT 1"),
-            ("zhuque_required", "INTEGER NOT NULL DEFAULT 1")):
+            ("zhuque_required", "INTEGER NOT NULL DEFAULT 1"), ("origin_research_id", "TEXT"),
+            ("origin_candidate_id", "TEXT")):
             ensure_column("project_profiles", column, definition)
         for column, definition in (
             ("audit_type", "TEXT NOT NULL DEFAULT 'structural'"), ("dimensions_json", "TEXT NOT NULL DEFAULT '{}'"),
@@ -201,8 +202,50 @@ def parse_json_object(text: str) -> dict:
     clean = re.sub(r"```\s*$", "", clean).strip()
     start, end = clean.find("{"), clean.rfind("}")
     if start < 0 or end <= start:
-        raise ValueError("深审模型未返回JSON对象")
+        raise ValueError("模型未返回可解析的JSON对象")
     return json.loads(clean[start:end + 1])
+
+
+def research_prompt(title: str, brief: str, reference_titles: str, market_notes: str, count: int) -> str:
+    return f"""你是短剧选题研发主编。请根据用户提供的创作方向、近期剧名信号和可核验备注，提出{count}个彼此显著不同、可进入正式立项的原创短剧方案。
+
+调研主题：{title}
+用户思路：{brief or '未提供'}
+近期剧名/参考标题（只代表标题与题材信号，不代表你知道其剧情、热度或收益）：
+{reference_titles or '未提供'}
+可核验市场数据或用户备注：
+{market_notes or '未提供'}
+
+硬性规则：
+1. 不得从剧名臆造原作剧情、签约状态、播放量、收益或排名；没有数据就明确按“标题信号”分析。
+2. 推荐必须是新项目，不复刻参考标题，不只换人名、职业或时代；人物关系、核心机制、冲突场域和结局至少三项不同。
+3. 各方案题材、职业、情绪引擎、视觉奇观要拉开差异；剧名不要全部使用“两段式反转标题”。
+4. 建议体量限定30—60集，并结合事件容量判断，不机械统一为60集。
+5. score是内部立项推荐分，不是平台通过率；按题眼15、冲突20、人物15、持续性20、差异化15、可视化15合计100分保守评分。
+6. 只输出一个JSON对象，不要Markdown，不要解释性前后缀。
+
+JSON结构：{{"analysis_summary":"说明本轮仅用了哪些信号、哪些事实不能判断","candidates":[{{"title":"","genre":"","hook":"","core_conflict":"","innovation":"","episode_recommendation":50,"score":90,"risks":""}}]}}"""
+
+
+def normalize_research(raw: dict, count: int, reference_titles: str) -> dict:
+    refs = set()
+    for value in re.split(r"\r?\n|[；;]", reference_titles or ""):
+        value = re.sub(r"^\s*\d+[.、）)]?\s*", "", value).replace("《", "").replace("》", "").strip()
+        if value: refs.add(value)
+    candidates, seen = [], set()
+    for source in raw.get("candidates") or []:
+        title = str(source.get("title") or "").replace("《", "").replace("》", "").strip(); key = title.lower()
+        if not title or len(title) > 80 or key in seen or title in refs: continue
+        genre = str(source.get("genre") or "").strip(); hook = str(source.get("hook") or "").strip(); core = str(source.get("core_conflict") or "").strip(); innovation = str(source.get("innovation") or "").strip(); risks = str(source.get("risks") or "").strip()
+        if not genre or len(hook) < 18 or len(core) < 18 or len(innovation) < 12: continue
+        try: episodes = round(float(source.get("episode_recommendation") or 50))
+        except (TypeError, ValueError): episodes = 50
+        try: score = float(source.get("score") or 0)
+        except (TypeError, ValueError): score = 0
+        seen.add(key); candidates.append({"title": title, "genre": genre, "hook": hook, "core_conflict": core, "innovation": innovation, "episode_recommendation": max(30, min(60, episodes)), "score": max(0, min(100, score)), "risks": risks or "需在G1阶段继续核查同质化、专业常识与长线容量"})
+        if len(candidates) >= count: break
+    if len(candidates) < min(3, count): raise ValueError(f"有效推荐不足3个（仅解析到{len(candidates)}个），请重试或补充更明确的思路")
+    return {"analysisSummary": str(raw.get("analysis_summary") or "本轮只依据用户提供的创作方向与标题信号形成推荐；未提供的数据不作事实判断。").strip(), "candidates": candidates}
 
 
 def normalize_deep_audit(raw: dict, threshold: float) -> dict:
@@ -390,7 +433,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"; parts = self.parts(path)
-        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.7.0"}); return
+        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.8.0"}); return
+        if path == "/api/research":
+            with db() as conn: rows = conn.execute("SELECT r.*,COUNT(c.id) AS candidate_count FROM research_sessions r LEFT JOIN research_candidates c ON c.session_id=r.id GROUP BY r.id ORDER BY r.updated_at DESC LIMIT 50").fetchall()
+            self.send_json({"sessions": [dict(r) for r in rows]}); return
+        if len(parts) == 3 and parts[:2] == ["api", "research"]:
+            with db() as conn:
+                session = conn.execute("SELECT * FROM research_sessions WHERE id=?", (parts[2],)).fetchone()
+                candidates = conn.execute("SELECT id,session_id,title,genre,hook,core_conflict,innovation,episode_recommendation,score,risks,created_at FROM research_candidates WHERE session_id=? ORDER BY score DESC,created_at", (parts[2],)).fetchall() if session else []
+            self.send_json({"session": dict(session), "candidates": [dict(x) for x in candidates]} if session else {"error": "调研记录不存在"}, 200 if session else 404); return
         if path == "/api/projects":
             with db() as conn: rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
             self.send_json({"projects": [project_summary(r) for r in rows]}); return
@@ -419,6 +470,47 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path.rstrip("/"); parts = self.parts(path)
         try:
+            if path == "/api/research/generate":
+                data = self.read_json(); title = str(data.get("title", "")).strip(); brief = str(data.get("brief", "")).strip(); reference_titles = str(data.get("referenceTitles", "")).strip(); market_notes = str(data.get("marketNotes", "")).strip()
+                try: count = int(data.get("count", 5))
+                except (TypeError, ValueError): count = 0
+                if not title or len(title) > 120: self.send_json({"error": "调研主题不能为空且不超过120字"}, 400); return
+                if count < 3 or count > 10: self.send_json({"error": "推荐数量必须是3—10之间的整数"}, 400); return
+                if not brief and not reference_titles and not market_notes: self.send_json({"error": "请至少提供创作思路、近期剧名或市场备注中的一项"}, 400); return
+                session_id = "rs-" + uuid.uuid4().hex[:12]; stamp = now_iso()
+                with db() as conn: conn.execute("INSERT INTO research_sessions(id,title,brief,reference_titles,market_notes,requested_count,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", (session_id, title, brief, reference_titles, market_notes, count, "running", stamp, stamp))
+                try: output = call_model(data.get("config") or {}, research_prompt(title, brief, reference_titles, market_notes, count))
+                except ValueError as exc:
+                    with db() as conn: conn.execute("UPDATE research_sessions SET status=?,error=?,updated_at=? WHERE id=?", ("failed", str(exc), now_iso(), session_id))
+                    self.send_json({"error": str(exc), "sessionId": session_id}, 502); return
+                try: normalized = normalize_research(parse_json_object(output), count, reference_titles)
+                except (ValueError, json.JSONDecodeError) as exc:
+                    with db() as conn: conn.execute("UPDATE research_sessions SET status=?,error=?,updated_at=? WHERE id=?", ("failed", str(exc), now_iso(), session_id))
+                    self.send_json({"error": str(exc), "sessionId": session_id}, 422); return
+                done = now_iso(); candidate_rows = []
+                with db() as conn:
+                    conn.execute("UPDATE research_sessions SET analysis_summary=?,status=?,error='',updated_at=? WHERE id=?", (normalized["analysisSummary"], "ready", done, session_id))
+                    for candidate in normalized["candidates"]:
+                        candidate_id = "rc-" + uuid.uuid4().hex[:12]
+                        conn.execute("INSERT INTO research_candidates(id,session_id,title,genre,hook,core_conflict,innovation,episode_recommendation,score,risks,raw_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (candidate_id, session_id, candidate["title"], candidate["genre"], candidate["hook"], candidate["core_conflict"], candidate["innovation"], candidate["episode_recommendation"], candidate["score"], candidate["risks"], json.dumps(candidate, ensure_ascii=False), done))
+                    candidate_rows = conn.execute("SELECT id,session_id,title,genre,hook,core_conflict,innovation,episode_recommendation,score,risks,created_at FROM research_candidates WHERE session_id=? ORDER BY score DESC,created_at", (session_id,)).fetchall()
+                self.send_json({"session": {"id": session_id, "title": title, "brief": brief, "reference_titles": reference_titles, "market_notes": market_notes, "requested_count": count, "analysis_summary": normalized["analysisSummary"], "status": "ready", "created_at": stamp, "updated_at": done}, "candidates": [dict(x) for x in candidate_rows]}, 201); return
+            if len(parts) == 4 and parts[:2] == ["api", "research"] and parts[3] == "project":
+                data = self.read_json()
+                with db() as conn: candidate = conn.execute("SELECT c.*,r.id AS research_id,r.title AS research_title FROM research_candidates c JOIN research_sessions r ON r.id=c.session_id WHERE c.id=?", (parts[2],)).fetchone()
+                if not candidate: self.send_json({"error": "推荐方案不存在"}, 404); return
+                name = str(data.get("name") or candidate["title"]).strip()
+                try: total = int(data.get("totalEpisodes") or candidate["episode_recommendation"] or 50); submission_end = int(data.get("submissionEnd") or 10); min_duration = int(data.get("durationMin") or 120); max_duration = int(data.get("durationMax") or 180); quality = float(data.get("qualityThreshold") or 90); zhuque = float(data.get("zhuqueThreshold") or 85)
+                except (TypeError, ValueError): total, submission_end, min_duration, max_duration, quality, zhuque = 0, 0, 0, 0, -1, -1
+                if not name or len(name) > 120: self.send_json({"error": "项目名称不能为空且不超过120字"}, 400); return
+                if total < 10 or total > 200 or submission_end < 1 or submission_end > total: self.send_json({"error": "总集数或提交范围无效"}, 400); return
+                if min_duration < 30 or max_duration < min_duration or max_duration > 600 or not (0 <= quality <= 100 and 0 <= zhuque <= 100): self.send_json({"error": "立项门槛或单集时长无效"}, 400); return
+                project_data = {**data, "totalEpisodes": total, "submissionStart": 1, "submissionEnd": submission_end, "durationMin": min_duration, "durationMax": max_duration, "qualityThreshold": quality, "zhuqueThreshold": zhuque, "route": data.get("route") or "完全原创 / 市场参考", "genre": data.get("genre") or candidate["genre"], "openingTemplate": data.get("openingTemplate") or "老王模板"}
+                project_id = "p-" + uuid.uuid4().hex[:12]; stamp = now_iso(); seed = f"选题种子（需在G1扩写并人工确认）\n一句话钩子：{candidate['hook']}\n核心冲突：{candidate['core_conflict']}\n创新点：{candidate['innovation']}\n风险提示：{candidate['risks']}"
+                with db() as conn:
+                    conn.execute("INSERT INTO projects(id,name,route,note,created_at,updated_at) VALUES(?,?,?,?,?,?)", (project_id, name, project_data["route"], "调研推荐立项 · 待G0确认", stamp, stamp)); seed_workspace(conn, project_id, stamp, project_data)
+                    conn.execute("UPDATE project_profiles SET origin_research_id=?,origin_candidate_id=? WHERE project_id=?", (candidate["research_id"], candidate["id"], project_id)); conn.execute("UPDATE story_assets SET content=?,version=version+1,updated_at=? WHERE project_id=? AND asset_type='synopsis'", (seed, stamp, project_id)); conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "research", f"从调研「{candidate['research_title']}」推荐方案建立项目；仍需完成G0参数确认与G1完整方案", stamp))
+                self.send_json({"project": {"id": project_id, "name": name, "route": project_data["route"], "note": "调研推荐立项 · 待G0确认", "updatedAt": stamp}}, 201); return
             if path == "/api/model/test":
                 data = self.read_json()
                 try: output = call_model(data, "仅回复“连接成功”，不要补充其他内容。")

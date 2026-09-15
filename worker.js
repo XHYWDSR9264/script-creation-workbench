@@ -125,7 +125,39 @@ function exportText(data,version) {
 }
 
 const DIMENSIONS={premise:15,causality:15,characters:20,dialogue:15,pacing:10,emotion:10,performance:10,continuity:5};
-function parseJsonObject(text){const clean=String(text||'').replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim(),start=clean.indexOf('{'),end=clean.lastIndexOf('}');if(start<0||end<=start)throw new Error('深审模型未返回JSON对象');return JSON.parse(clean.slice(start,end+1))}
+function parseJsonObject(text){const clean=String(text||'').replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim(),start=clean.indexOf('{'),end=clean.lastIndexOf('}');if(start<0||end<=start)throw new Error('模型未返回可解析的JSON对象');return JSON.parse(clean.slice(start,end+1))}
+function researchPrompt({title,brief,referenceTitles,marketNotes,count}){
+  return `你是短剧选题研发主编。请根据用户提供的创作方向、近期剧名信号和可核验备注，提出${count}个彼此显著不同、可进入正式立项的原创短剧方案。
+
+调研主题：${title}
+用户思路：${brief||'未提供'}
+近期剧名/参考标题（只代表标题与题材信号，不代表你知道其剧情、热度或收益）：
+${referenceTitles||'未提供'}
+可核验市场数据或用户备注：
+${marketNotes||'未提供'}
+
+硬性规则：
+1. 不得从剧名臆造原作剧情、签约状态、播放量、收益或排名；没有数据就明确按“标题信号”分析。
+2. 推荐必须是新项目，不复刻参考标题，不只换人名、职业或时代；人物关系、核心机制、冲突场域和结局至少三项不同。
+3. 各方案题材、职业、情绪引擎、视觉奇观要拉开差异；剧名不要全部使用“两段式反转标题”。
+4. 建议体量限定30—60集，并结合事件容量判断，不机械统一为60集。
+5. score是内部立项推荐分，不是平台通过率；按题眼15、冲突20、人物15、持续性20、差异化15、可视化15合计100分保守评分。
+6. 只输出一个JSON对象，不要Markdown，不要解释性前后缀。
+
+JSON结构：{"analysis_summary":"说明本轮仅用了哪些信号、哪些事实不能判断","candidates":[{"title":"","genre":"","hook":"","core_conflict":"","innovation":"","episode_recommendation":50,"score":90,"risks":""}]}`;
+}
+function normalizeResearch(raw,count,referenceTitles){
+  const refs=new Set(String(referenceTitles||'').split(/\r?\n|[；;]/).map(x=>x.replace(/^\s*\d+[.、）)]?\s*/,'').replace(/[《》]/g,'').trim()).filter(Boolean));
+  const rows=Array.isArray(raw?.candidates)?raw.candidates:[],seen=new Set(),candidates=[];
+  for(const src of rows){
+    const title=String(src?.title||'').replace(/[《》]/g,'').trim(),key=title.toLowerCase();if(!title||title.length>80||seen.has(key)||refs.has(title))continue;
+    const genre=String(src?.genre||'').trim(),hook=String(src?.hook||'').trim(),core=String(src?.core_conflict||'').trim(),innovation=String(src?.innovation||'').trim(),risks=String(src?.risks||'').trim();
+    if(!genre||hook.length<18||core.length<18||innovation.length<12)continue;
+    seen.add(key);candidates.push({title,genre,hook,core_conflict:core,innovation,episode_recommendation:Math.max(30,Math.min(60,Math.round(Number(src?.episode_recommendation)||50))),score:Math.max(0,Math.min(100,Number(src?.score)||0)),risks:risks||'需在G1阶段继续核查同质化、专业常识与长线容量'});if(candidates.length>=count)break;
+  }
+  if(candidates.length<Math.min(3,count))throw new Error(`有效推荐不足3个（仅解析到${candidates.length}个），请重试或补充更明确的思路`);
+  return{analysisSummary:String(raw?.analysis_summary||'本轮只依据用户提供的创作方向与标题信号形成推荐；未提供的数据不作事实判断。').trim(),candidates};
+}
 function normalizeDeepAudit(raw,threshold){
   const dimensions={};let total=0;for(const [key,max] of Object.entries(DIMENSIONS)){const src=raw?.dimensions?.[key]||{},score=Math.max(0,Math.min(max,Number(src.score)||0));dimensions[key]={score,max,evidence:Array.isArray(src.evidence)?src.evidence.slice(0,6):[],deduction:String(src.deduction||'')};total+=score}
   const hardErrors=Array.isArray(raw?.hard_errors)?raw.hard_errors.slice(0,50):[],reverseChecks={},reverseSource=raw?.reverse_checks&&typeof raw.reverse_checks==='object'?raw.reverse_checks:{};for(const key of ['prop_chain','permission_license','adjacent_transition','presence_speaker','packaging_identity']){const src=reverseSource[key]||{},status=['pass','fail','not_applicable'].includes(src.status)?src.status:'fail';reverseChecks[key]={status,evidence:Array.isArray(src.evidence)?src.evidence.slice(0,8):[],problem:String(src.problem||(!reverseSource[key]?'模型漏交该反查表':''))}}
@@ -142,8 +174,24 @@ function analyzeScript(content){
 
 async function api(request, env) {
   const url = new URL(request.url), parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
-  if (url.pathname === '/api/health') return json({ok:true,service:'剧本创作总控台',storage:'cloudflare-d1',version:'0.7.0'});
+  if (url.pathname === '/api/health') return json({ok:true,service:'剧本创作总控台',storage:'cloudflare-d1',version:'0.8.0'});
   if (!env.DB) return json({error:'数据库绑定未配置'},503);
+
+  if(url.pathname==='/api/research'&&request.method==='GET'){
+    const {results}=await env.DB.prepare(`SELECT r.*,COUNT(c.id) AS candidate_count FROM research_sessions r LEFT JOIN research_candidates c ON c.session_id=r.id GROUP BY r.id ORDER BY r.updated_at DESC LIMIT 50`).all();return json({sessions:results});
+  }
+  if(parts.length===3&&parts[0]==='api'&&parts[1]==='research'&&request.method==='GET'){
+    const session=await env.DB.prepare('SELECT * FROM research_sessions WHERE id=?').bind(parts[2]).first();if(!session)return json({error:'调研记录不存在'},404);const candidates=(await env.DB.prepare('SELECT id,session_id,title,genre,hook,core_conflict,innovation,episode_recommendation,score,risks,created_at FROM research_candidates WHERE session_id=? ORDER BY score DESC,created_at').bind(parts[2]).all()).results;return json({session,candidates});
+  }
+  if(url.pathname==='/api/research/generate'&&request.method==='POST'){
+    let body;try{body=await request.json()}catch{return json({error:'JSON格式错误'},400)}const title=String(body?.title||'').trim(),brief=String(body?.brief||'').trim(),referenceTitles=String(body?.referenceTitles||'').trim(),marketNotes=String(body?.marketNotes||'').trim(),count=Number(body?.count||5);if(!title||title.length>120)return json({error:'调研主题不能为空且不超过120字'},400);if(!Number.isInteger(count)||count<3||count>10)return json({error:'推荐数量必须是3—10之间的整数'},400);if(!brief&&!referenceTitles&&!marketNotes)return json({error:'请至少提供创作思路、近期剧名或市场备注中的一项'},400);
+    const id=`rs-${crypto.randomUUID().replaceAll('-','').slice(0,12)}`,stamp=now();await env.DB.prepare('INSERT INTO research_sessions(id,title,brief,reference_titles,market_notes,requested_count,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').bind(id,title,brief,referenceTitles,marketNotes,count,'running',stamp,stamp).run();let output;
+    try{output=await callModel(body?.config||{},researchPrompt({title,brief,referenceTitles,marketNotes,count}))}catch(error){const message=String(error?.message||error);await env.DB.prepare('UPDATE research_sessions SET status=?,error=?,updated_at=? WHERE id=?').bind('failed',message,now(),id).run();return json({error:message,sessionId:id},502)}
+    let normalized;try{normalized=normalizeResearch(parseJsonObject(output),count,referenceTitles)}catch(error){const message=String(error?.message||error);await env.DB.prepare('UPDATE research_sessions SET status=?,error=?,updated_at=? WHERE id=?').bind('failed',message,now(),id).run();return json({error:message,sessionId:id},422)}const done=now();await env.DB.prepare('UPDATE research_sessions SET analysis_summary=?,status=?,error=?,updated_at=? WHERE id=?').bind(normalized.analysisSummary,'ready','',done,id).run();for(const candidate of normalized.candidates){const candidateId=`rc-${crypto.randomUUID().replaceAll('-','').slice(0,12)}`;await env.DB.prepare('INSERT INTO research_candidates(id,session_id,title,genre,hook,core_conflict,innovation,episode_recommendation,score,risks,raw_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').bind(candidateId,id,candidate.title,candidate.genre,candidate.hook,candidate.core_conflict,candidate.innovation,candidate.episode_recommendation,candidate.score,candidate.risks,JSON.stringify(candidate),done).run()}const candidates=(await env.DB.prepare('SELECT id,session_id,title,genre,hook,core_conflict,innovation,episode_recommendation,score,risks,created_at FROM research_candidates WHERE session_id=? ORDER BY score DESC,created_at').bind(id).all()).results;return json({session:{id,title,brief,reference_titles:referenceTitles,market_notes:marketNotes,requested_count:count,analysis_summary:normalized.analysisSummary,status:'ready',created_at:stamp,updated_at:done},candidates},201);
+  }
+  if(parts.length===4&&parts[0]==='api'&&parts[1]==='research'&&parts[3]==='project'&&request.method==='POST'){
+    let body;try{body=await request.json()}catch{return json({error:'JSON格式错误'},400)}const candidate=await env.DB.prepare('SELECT c.*,r.id AS research_id,r.title AS research_title FROM research_candidates c JOIN research_sessions r ON r.id=c.session_id WHERE c.id=?').bind(parts[2]).first();if(!candidate)return json({error:'推荐方案不存在'},404);const name=String(body?.name||candidate.title).trim(),total=Number(body?.totalEpisodes||candidate.episode_recommendation||50),submissionEnd=Number(body?.submissionEnd||10),minDuration=Number(body?.durationMin||120),maxDuration=Number(body?.durationMax||180),quality=Number(body?.qualityThreshold||90),zhuque=Number(body?.zhuqueThreshold||85);if(!name||name.length>120)return json({error:'项目名称不能为空且不超过120字'},400);if(!Number.isInteger(total)||total<10||total>200||!Number.isInteger(submissionEnd)||submissionEnd<1||submissionEnd>total)return json({error:'总集数或提交范围无效'},400);if(minDuration<30||maxDuration<minDuration||maxDuration>600||quality<0||quality>100||zhuque<0||zhuque>100)return json({error:'立项门槛或单集时长无效'},400);const projectId=`p-${crypto.randomUUID().replaceAll('-','').slice(0,12)}`,stamp=now(),projectBody={...body,totalEpisodes:total,submissionStart:1,submissionEnd,durationMin:minDuration,durationMax:maxDuration,qualityThreshold:quality,zhuqueThreshold:zhuque,route:body?.route||'完全原创 / 市场参考',genre:body?.genre||candidate.genre,openingTemplate:body?.openingTemplate||'老王模板'};await env.DB.prepare('INSERT INTO projects(id,name,route,note,created_at,updated_at) VALUES(?,?,?,?,?,?)').bind(projectId,name,projectBody.route,'调研推荐立项 · 待G0确认',stamp,stamp).run();await seedWorkspace(env.DB,projectId,stamp,projectBody);await env.DB.prepare('UPDATE project_profiles SET origin_research_id=?,origin_candidate_id=? WHERE project_id=?').bind(candidate.research_id,candidate.id,projectId).run();const seed=`选题种子（需在G1扩写并人工确认）\n一句话钩子：${candidate.hook}\n核心冲突：${candidate.core_conflict}\n创新点：${candidate.innovation}\n风险提示：${candidate.risks}`;await env.DB.prepare("UPDATE story_assets SET content=?,version=version+1,updated_at=? WHERE project_id=? AND asset_type='synopsis'").bind(seed,stamp,projectId).run();await env.DB.prepare('INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)').bind(projectId,'research',`从调研「${candidate.research_title}」推荐方案建立项目；仍需完成G0参数确认与G1完整方案`,stamp).run();return json({project:{id:projectId,name,route:projectBody.route,note:'调研推荐立项 · 待G0确认',updatedAt:stamp}},201);
+  }
 
   if (url.pathname === '/api/projects' && request.method === 'GET') {
     const {results}=await env.DB.prepare('SELECT id,name,route,note,updated_at AS updatedAt FROM projects ORDER BY updated_at DESC').all(); return json({projects:results});

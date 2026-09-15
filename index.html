@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0b111a" />
   <title>剧本创作总控台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=071" />
-  <link rel="stylesheet" href="workspace.css?v=071" />
+  <link rel="stylesheet" href="styles.css?v=080" />
+  <link rel="stylesheet" href="workspace.css?v=080" />
 </head>
 <body>
   <div class="app-shell">
@@ -24,6 +24,7 @@
 
       <div class="nav-section-label">工作区</div>
       <nav class="nav-list">
+        <button class="nav-item" data-view="research"><span class="nav-icon">⌕</span> 选题调研</button>
         <button class="nav-item active" data-view="overview"><span class="nav-icon">⌂</span> 项目总览</button>
         <button class="nav-item" data-view="tasks"><span class="nav-icon">▣</span> 创作任务</button>
         <button class="nav-item" data-view="drafts"><span class="nav-icon">≡</span> 正文版本</button>
@@ -53,7 +54,7 @@
       </header>
 
       <div class="preview-warning">公开预览环境：请勿上传敏感、保密或未获授权的素材。正式使用前建议启用访问控制。</div>
-      <section class="empty-workspace hidden" id="emptyWorkspace"><div class="empty-mark">＋</div><span class="eyebrow">空白工作区</span><h1>从一个真实任务开始</h1><p>当前没有项目。新建项目后，系统会按G0—G6建立参数、方案、校准稿、分批正文、内容终审、朱雀同版证据和交付归档。</p><button class="primary-button" id="emptyCreateBtn">新建第一个项目</button></section>
+      <section class="empty-workspace hidden" id="emptyWorkspace"><div class="empty-mark">＋</div><span class="eyebrow">空白工作区</span><h1>从调研或一个真实任务开始</h1><p>还没有明确剧名时，可先输入创作思路和近期剧名信号，由系统推荐多个原创方向；选中后再建立G0—G6正式项目。</p><div class="empty-actions"><button class="primary-button" id="emptyResearchBtn">先做选题调研</button><button class="small-button" id="emptyCreateBtn">直接新建项目</button></div></section>
       <div class="workspace hidden" id="workspace">
         <section class="content-column">
           <div class="project-heading">
@@ -147,6 +148,23 @@
     <div class="modal"><div class="modal-header"><div><span class="eyebrow">新建工作项目</span><h2 id="modalTitle">创建一个独立项目</h2></div><button class="icon-button" id="closeModal">×</button></div><label>项目名称<input id="newProjectName" placeholder="例如：我在旧厂房开夜校" /></label><label>生产路线<select id="newProjectRoute"><option>完全原创 / 市场参考</option><option>授权IP改编</option><option>深度二创</option><option>定制卡点扩写</option></select></label><div class="form-grid"><label>地区<select id="newProjectRegion"><option>国内</option><option>海外</option></select></label><label>呈现形式<select id="newProjectMedium"><option>AI漫剧</option><option>真人短剧</option><option>仿真人</option></select></label><label>总集数<input id="newTotalEpisodes" type="number" min="10" max="200" value="60" /></label><label>提交到第几集<input id="newSubmissionEnd" type="number" min="1" max="200" value="10" /></label><label>单集最短（秒）<input id="newDurationMin" type="number" min="30" max="600" value="120" /></label><label>单集最长（秒）<input id="newDurationMax" type="number" min="30" max="600" value="180" /></label><label>开头模板<select id="newOpeningTemplate"><option>老王模板</option><option>大麦模板</option></select></label><label>题材标签<input id="newGenre" placeholder="都市、女频、悬疑" /></label><label>内容质量门槛<input id="newQualityThreshold" type="number" min="0" max="100" value="90" /></label><label>朱雀人工特征门槛<input id="newZhuqueThreshold" type="number" min="0" max="100" value="85" /></label></div><div class="modal-note">新项目会自动建立独立的素材、正文、审校、检测和交付空间。</div><div class="modal-actions"><button class="text-button" id="cancelModal">取消</button><button class="primary-button" id="createProject">创建项目</button></div></div>
   </div>
 
+  <div class="modal-backdrop hidden" id="researchModal" role="dialog" aria-modal="true" aria-labelledby="researchTitle">
+    <div class="modal extra-wide-modal research-modal"><div class="modal-header"><div><span class="eyebrow">R0 · 可选前置阶段</span><h2 id="researchTitle">选题调研与项目孵化</h2></div><button class="icon-button" id="closeResearchModal">×</button></div>
+      <div class="research-intro"><strong>先推荐，再立项</strong><p>近期剧名只作为标题与题材信号；若未提供真实数据，系统不会臆造热度、收益、签约状态或原作剧情。R0不属于G0—G6闸门，只有你选中的方案才会建立正式项目。</p></div>
+      <div class="research-layout">
+        <section class="research-form-panel">
+          <label>调研主题<input id="researchTopic" placeholder="例如：现代下沉女性成长与小众行业" /></label>
+          <label>你的思路<textarea id="researchBrief" placeholder="可写受众、情绪、题材、禁区、想解决的问题；不必先起剧名"></textarea></label>
+          <label>近期热门剧名 / 签约剧名<textarea id="researchTitles" placeholder="可逐行粘贴。系统只读取标题信号，不猜剧情和数据"></textarea></label>
+          <label>可核验市场数据 / 备注<textarea id="researchNotes" placeholder="可选：平台、日期、榜单名、播放或签约等已核实信息；没有可留空"></textarea></label>
+          <div class="form-grid compact-grid"><label>推荐数量<input id="researchCount" type="number" min="3" max="10" value="5" /></label><label>立项地区<select id="researchRegion"><option>国内</option><option>海外</option></select></label><label>呈现形式<select id="researchMedium"><option>AI漫剧</option><option>真人短剧</option><option>仿真人</option></select></label><label>开头模板<select id="researchTemplate"><option>老王模板</option><option>大麦模板</option></select></label><label>首次提交到第几集<input id="researchSubmissionEnd" type="number" min="1" max="60" value="10" /></label></div>
+          <div class="modal-actions research-actions"><button class="small-button" id="loadResearchHistoryBtn">刷新历史</button><button class="primary-button" id="generateResearchBtn">生成推荐方案</button></div>
+        </section>
+        <section class="research-result-panel"><div class="research-result-head"><div><span class="eyebrow">推荐池</span><h3>从方案卡建立项目</h3></div><select id="researchHistory"><option value="">本次结果</option></select></div><div id="researchSummary" class="research-summary">尚未生成。填写左侧任意一种有效信号后开始调研。</div><div id="researchResults" class="research-results"><div class="empty-state">推荐结果会显示在这里。</div></div></section>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-backdrop hidden" id="assetModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">项目资料</span><h2 id="assetModalTitle">编辑剧情梗概</h2></div><button class="icon-button" id="closeAssetModal">×</button></div><textarea class="large-editor" id="assetContent" placeholder="输入内容，保存后会记录资料版本"></textarea><div class="modal-actions"><button class="text-button" id="cancelAssetModal">取消</button><button class="primary-button" id="saveAssetBtn">保存资料</button></div></div></div>
 
   <div class="modal-backdrop hidden" id="versionModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">正文版本</span><h2>保存一个不可覆盖的新版本</h2></div><button class="icon-button" id="closeVersionModal">×</button></div><div class="form-grid"><label>版本名称<input id="versionLabel" placeholder="例如：v0.1 校准稿" /></label><label>来源<select id="versionSource"><option>人工编辑</option><option>模型生成</option><option>定向修复</option></select></label><label>起始集<input id="versionStart" type="number" min="1" value="1" /></label><label>结束集<input id="versionEnd" type="number" min="1" value="3" /></label></div><label>正文内容<textarea class="large-editor draft-editor" id="versionContent" placeholder="粘贴本次版本的完整正文"></textarea></label><div id="scriptAnalysis" class="analysis-panel hidden"></div><div class="modal-actions"><button class="small-button hidden" id="analyzeVersionBtn">解析场景树</button><button class="text-button" id="cancelVersionModal">取消</button><button class="primary-button" id="saveVersionBtn">保存正文版本</button></div></div></div>
@@ -166,6 +184,6 @@
   <div class="modal-backdrop hidden" id="continuityModal" role="dialog" aria-modal="true"><div class="modal extra-wide-modal"><div class="modal-header"><div><span class="eyebrow">连续性账本</span><h2>人物、道具、时间、权限与地点</h2></div><button class="icon-button" id="closeContinuityModal">×</button></div><div class="continuity-toolbar"><label>从正文提取<select id="continuityVersion"></select></label><button class="small-button" id="extractContinuityBtn">提取人物与地点</button></div><div id="continuityList" class="continuity-list"></div><h3>新增人工条目</h3><div class="form-grid"><label>类别<select id="continuityCategory"><option value="character">人物</option><option value="prop">道具</option><option value="timeline">时间线</option><option value="permission">权限/证照</option><option value="location">地点</option></select></label><label>主体<input id="continuitySubject" placeholder="例如：父亲留下的旧卡车" /></label><label>当前状态<input id="continuityState" placeholder="归属、伤势、是否取得、是否失效" /></label><label>首次出现集<input id="continuityFirst" type="number" min="1" /></label><label>最后确认集<input id="continuityLast" type="number" min="1" /></label><label>备注<input id="continuityNotes" placeholder="证据、后续待核项或人物所知边界" /></label></div><div class="modal-actions"><button class="primary-button" id="addContinuityBtn">添加到账本</button></div></div></div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="app.js?v=071"></script>
+  <script src="app.js?v=080"></script>
 </body>
 </html>

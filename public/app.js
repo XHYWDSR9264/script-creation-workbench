@@ -5,7 +5,7 @@ const assetDefs = {
   world:{title:'世界观设定',icon:'◇',hint:'时代、空间、规则、限制与代价'},
   beat_matrix:{title:'卡点矩阵',icon:'▤',hint:'每集任务、大事件、代价与钩子'}
 };
-let projects=[], currentDetail=null, editingAsset=null, viewingVersion=false, viewingVersionId=null, toastTimer;
+let projects=[], currentDetail=null, editingAsset=null, viewingVersion=false, viewingVersionId=null, toastTimer, researchSessions=[];
 const CONFIG_KEY='scriptWorkbench.llm.session';
 
 const escapeHtml = value => String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -89,6 +89,38 @@ function renderThread(events,project){
   const cards=events.slice(0,8).map(e=>`<article class="thread-card"><div class="card-top"><div class="actor"><span class="actor-icon ai">${e.kind==='prompt'?'你':'✓'}</span><div><strong>${e.kind==='prompt'?'人工任务':'系统记录'}</strong><span class="actor-role">${escapeHtml(e.kind)}</span></div></div><time>${formatTime(e.created_at)}</time></div><p>${escapeHtml(e.message)}</p></article>`).join('');$('threadFeed').innerHTML=base+cards;
 }
 
+async function openResearch(){
+  toggleModal('researchModal',true);
+  await loadResearchHistory(false);
+}
+async function loadResearchHistory(showMessage=true){
+  try{
+    const data=await request('/api/research');researchSessions=data.sessions||[];
+    $('researchHistory').innerHTML='<option value="">本次结果 / 新调研</option>'+researchSessions.map(x=>`<option value="${escapeHtml(x.id)}">${escapeHtml(x.title)} · ${x.candidate_count||0}案 · ${formatTime(x.updated_at)}</option>`).join('');
+    if(showMessage)showToast('调研历史已刷新');
+  }catch(e){showToast('调研记录读取失败：'+e.message)}
+}
+function renderResearch(session,candidates){
+  $('researchSummary').textContent=session?.analysis_summary||'本轮只依据用户提供的信息形成选题推荐；未提供的数据不作事实判断。';
+  $('researchResults').innerHTML=candidates?.length?candidates.map(x=>`<article class="candidate-card"><div class="candidate-top"><div><h4>《${escapeHtml(x.title)}》</h4><div class="candidate-tags"><span class="mini-tag blue-tag">${escapeHtml(x.genre)}</span><span class="mini-tag">建议 ${Number(x.episode_recommendation)||50} 集</span></div></div><div class="candidate-score"><strong>${Number(x.score||0).toFixed(0)}</strong><small>内部推荐</small></div></div><dl><dt>一句话钩子</dt><dd>${escapeHtml(x.hook)}</dd><dt>核心冲突</dt><dd>${escapeHtml(x.core_conflict)}</dd><dt>创新机制</dt><dd>${escapeHtml(x.innovation)}</dd></dl><div class="card-footer"><span class="risk">${escapeHtml(x.risks||'需在G1继续核查')}</span><button class="primary-button create-from-candidate" data-candidate="${escapeHtml(x.id)}" data-title="${escapeHtml(x.title)}">建立项目</button></div></article>`).join(''):'<div class="empty-state">本次调研没有可用推荐。</div>';
+  $('researchResults').querySelectorAll('.create-from-candidate').forEach(btn=>btn.addEventListener('click',()=>createFromCandidate(btn.dataset.candidate,btn.dataset.title)));
+}
+async function generateResearch(){
+  const config=getModelConfig();if(!config.apiKey){openSettings();showToast('选题调研需要先配置并测试模型接口');return}
+  const body={title:$('researchTopic').value.trim(),brief:$('researchBrief').value.trim(),referenceTitles:$('researchTitles').value.trim(),marketNotes:$('researchNotes').value.trim(),count:Number($('researchCount').value),config};
+  const btn=$('generateResearchBtn');btn.disabled=true;btn.textContent='正在分析与去重…';$('researchSummary').textContent='模型正在区分标题信号、已核验数据与用户创作意图，并生成差异化推荐…';$('researchResults').innerHTML='<div class="empty-state">请稍候，推荐完成前不会自动建立项目。</div>';
+  try{const data=await request('/api/research/generate',{method:'POST',body:JSON.stringify(body)});renderResearch(data.session,data.candidates);await loadResearchHistory(false);$('researchHistory').value=data.session.id;showToast(`已生成${data.candidates.length}个选题，等待你选择立项`)}catch(e){$('researchSummary').textContent='调研失败：'+e.message;$('researchResults').innerHTML='<div class="empty-state">请检查输入或模型接口后重试。</div>';showToast(e.message)}finally{btn.disabled=false;btn.textContent='生成推荐方案'}
+}
+async function loadResearchSession(id){
+  if(!id){$('researchSummary').textContent='尚未生成。填写左侧任意一种有效信号后开始调研。';$('researchResults').innerHTML='<div class="empty-state">推荐结果会显示在这里。</div>';return}
+  try{const data=await request(`/api/research/${encodeURIComponent(id)}`);renderResearch(data.session,data.candidates)}catch(e){showToast(e.message)}
+}
+async function createFromCandidate(candidateId,title){
+  if(!window.confirm(`确认以《${title}》建立正式项目？建立后仍需人工确认G0，并补全G1方案。`))return;
+  const body={region:$('researchRegion').value,medium:$('researchMedium').value,openingTemplate:$('researchTemplate').value,submissionEnd:Number($('researchSubmissionEnd').value),qualityThreshold:90,zhuqueThreshold:85,route:'完全原创 / 市场参考'};
+  try{const {project}=await request(`/api/research/${encodeURIComponent(candidateId)}/project`,{method:'POST',body:JSON.stringify(body)});projects.forEach(x=>x.selected=false);projects.unshift({...project,selected:true});renderProjects();toggleModal('researchModal',false);await selectProject(0,false);showToast('已从推荐方案建立项目；R0不会自动替你通过G0/G1')}catch(e){showToast(e.message)}
+}
+
 function toggleModal(id,show){$(id).classList.toggle('hidden',!show)}
 function switchTab(name){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name));['thread','sources','assets','versions'].forEach(x=>$(`${x}Panel`).classList.toggle('hidden',x!==name))}
 function openAsset(type){editingAsset=type;const d=assetDefs[type],a=currentDetail.assets[type]||{content:''};$('assetModalTitle').textContent=`编辑${d.title}`;$('assetContent').value=a.content;toggleModal('assetModal',true);$('assetContent').focus()}
@@ -115,6 +147,8 @@ function downloadExport(format){const versionId=$('deliveryVersion').value;if(!v
 
 $('newProjectBtn').addEventListener('click',()=>toggleModal('projectModal',true));$('closeModal').addEventListener('click',()=>toggleModal('projectModal',false));$('cancelModal').addEventListener('click',()=>toggleModal('projectModal',false));
 $('emptyCreateBtn').addEventListener('click',()=>toggleModal('projectModal',true));
+$('emptyResearchBtn').addEventListener('click',openResearch);
+$('closeResearchModal').addEventListener('click',()=>toggleModal('researchModal',false));$('generateResearchBtn').addEventListener('click',generateResearch);$('loadResearchHistoryBtn').addEventListener('click',()=>loadResearchHistory(true));$('researchHistory').addEventListener('change',e=>loadResearchSession(e.target.value));$('researchModal').addEventListener('click',e=>{if(e.target.id==='researchModal')toggleModal('researchModal',false)});
 $('createProject').addEventListener('click',async()=>{const body={name:$('newProjectName').value.trim(),route:$('newProjectRoute').value,region:$('newProjectRegion').value,medium:$('newProjectMedium').value,totalEpisodes:Number($('newTotalEpisodes').value),submissionStart:1,submissionEnd:Number($('newSubmissionEnd').value),durationMin:Number($('newDurationMin').value),durationMax:Number($('newDurationMax').value),qualityThreshold:Number($('newQualityThreshold').value),zhuqueThreshold:Number($('newZhuqueThreshold').value),openingTemplate:$('newOpeningTemplate').value,genre:$('newGenre').value.trim()||'待设定'};try{const {project}=await request('/api/projects',{method:'POST',body:JSON.stringify(body)});projects.forEach(x=>x.selected=false);projects.unshift({...project,selected:true});renderProjects();toggleModal('projectModal',false);$('newProjectName').value='';await selectProject(0,false);showToast('项目已创建并建立独立工作空间')}catch(e){showToast(e.message)}});
 $('closeAssetModal').addEventListener('click',()=>toggleModal('assetModal',false));$('cancelAssetModal').addEventListener('click',()=>toggleModal('assetModal',false));$('saveAssetBtn').addEventListener('click',saveAsset);
 $('newVersionBtn').addEventListener('click',openVersion);$('closeVersionModal').addEventListener('click',()=>toggleModal('versionModal',false));$('cancelVersionModal').addEventListener('click',()=>toggleModal('versionModal',false));$('saveVersionBtn').addEventListener('click',saveVersion);
@@ -122,7 +156,7 @@ $('analyzeVersionBtn').addEventListener('click',analyzeVersion);
 ['projectModal','assetModal','versionModal'].forEach(id=>$(id).addEventListener('click',e=>{if(e.target.id===id)toggleModal(id,false)}));
 document.querySelectorAll('.tab').forEach(tab=>tab.addEventListener('click',()=>switchTab(tab.dataset.tab)));
 $('uploadSourceBtn').addEventListener('click',()=>$('sourceFileInput').click());$('sourceFileInput').addEventListener('change',async e=>{await uploadSources([...e.target.files]);e.target.value=''});
-document.querySelectorAll('.nav-item,.settings-link').forEach(item=>item.addEventListener('click',()=>{document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(item.classList.contains('nav-item'))item.classList.add('active');const view=item.dataset.view;if(view==='overview'||view==='tasks'){switchTab('thread');if(view==='tasks')$('promptInput').focus()}else if(view==='drafts')switchTab('versions');else if(view==='audit')toggleModal('auditModal',true);else if(view==='continuity')toggleModal('continuityModal',true);else if(view==='detector')toggleModal('detectorModal',true);else if(view==='delivery')toggleModal('deliveryModal',true);else if(view==='settings')openSettings()}));
+document.querySelectorAll('.nav-item,.settings-link').forEach(item=>item.addEventListener('click',()=>{document.querySelectorAll('.nav-item').forEach(x=>x.classList.remove('active'));if(item.classList.contains('nav-item'))item.classList.add('active');const view=item.dataset.view;if(view==='research'){openResearch();return}if(view==='settings'){openSettings();return}if(!currentProject()){renderEmptyWorkspace();showToast('请先做选题调研或新建项目');return}if(view==='overview'||view==='tasks'){switchTab('thread');if(view==='tasks')$('promptInput').focus()}else if(view==='drafts')switchTab('versions');else if(view==='audit')toggleModal('auditModal',true);else if(view==='continuity')toggleModal('continuityModal',true);else if(view==='detector')toggleModal('detectorModal',true);else if(view==='delivery')toggleModal('deliveryModal',true)}));
 $('sendBtn').addEventListener('click',runModelTask);
 $('promptInput').addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='Enter')$('sendBtn').click()});
 $('runTaskBtn').addEventListener('click',()=>{$('promptInput').focus();showToast('请在下方选择任务类型并输入指令')});

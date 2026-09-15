@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS project_profiles (
   calibration_threshold INTEGER NOT NULL DEFAULT 85, quality_threshold INTEGER NOT NULL DEFAULT 90,
   zhuque_threshold REAL NOT NULL DEFAULT 85, one_scene_each INTEGER NOT NULL DEFAULT 1,
   zhuque_required INTEGER NOT NULL DEFAULT 1,
+  origin_research_id TEXT, origin_candidate_id TEXT,
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 CREATE TABLE IF NOT EXISTS story_assets (
@@ -142,6 +143,24 @@ CREATE TABLE IF NOT EXISTS quality_reviews (
   FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_quality_reviews_project ON quality_reviews(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS research_sessions (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, brief TEXT NOT NULL DEFAULT '',
+  reference_titles TEXT NOT NULL DEFAULT '', market_notes TEXT NOT NULL DEFAULT '',
+  requested_count INTEGER NOT NULL DEFAULT 5, analysis_summary TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft', error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_research_sessions_updated ON research_sessions(updated_at DESC);
+CREATE TABLE IF NOT EXISTS research_candidates (
+  id TEXT PRIMARY KEY, session_id TEXT NOT NULL, title TEXT NOT NULL,
+  genre TEXT NOT NULL DEFAULT '', hook TEXT NOT NULL DEFAULT '',
+  core_conflict TEXT NOT NULL DEFAULT '', innovation TEXT NOT NULL DEFAULT '',
+  episode_recommendation INTEGER NOT NULL DEFAULT 50, score REAL NOT NULL DEFAULT 0,
+  risks TEXT NOT NULL DEFAULT '', raw_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES research_sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_research_candidates_session ON research_candidates(session_id, score DESC, created_at);
 
 INSERT OR IGNORE INTO project_profiles(project_id,genre,current_stage,progress,status,updated_at)
 SELECT id,'待设定','G0 立项与参数',10,'待立项',updated_at FROM projects;
