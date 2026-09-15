@@ -82,7 +82,7 @@ def get_detail(conn: sqlite3.Connection, project_id: str) -> dict | None:
         return None
     profile = conn.execute("SELECT * FROM project_profiles WHERE project_id=?", (project_id,)).fetchone()
     assets = conn.execute("SELECT asset_type,content,version,updated_at FROM story_assets WHERE project_id=?", (project_id,)).fetchall()
-    versions = conn.execute("SELECT id,label,range_start,range_end,sha256,source,status,created_at FROM draft_versions WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
+    versions = conn.execute("SELECT id,label,range_start,range_end,sha256,source,status,created_at FROM draft_versions WHERE project_id=? ORDER BY created_at DESC,rowid DESC", (project_id,)).fetchall()
     gates = conn.execute("SELECT gate_code,title,status,note,updated_at FROM gates WHERE project_id=? ORDER BY gate_code", (project_id,)).fetchall()
     events = conn.execute("SELECT kind,message,created_at FROM activity_logs WHERE project_id=? ORDER BY id DESC LIMIT 50", (project_id,)).fetchall()
     sources = conn.execute("SELECT id,name,mime,byte_size,sha256,extraction_status,created_at FROM source_documents WHERE project_id=? ORDER BY created_at DESC", (project_id,)).fetchall()
@@ -91,15 +91,63 @@ def get_detail(conn: sqlite3.Connection, project_id: str) -> dict | None:
     runs = conn.execute("SELECT id,task_type,instruction,status,stage,progress,output_preview,error,version_id,retry_of,created_at,updated_at FROM task_runs WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
     approvals = conn.execute("SELECT id,gate_code,decision,note,version_id,sha256,actor,created_at FROM approval_records WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
     continuity = conn.execute("SELECT id,category,subject,state,first_episode,last_episode,source_version_id,status,notes,created_at,updated_at FROM continuity_entries WHERE project_id=? ORDER BY category,subject", (project_id,)).fetchall()
+    quality_reviews = conn.execute("SELECT id,version_id,score,note,actor,created_at FROM quality_reviews WHERE project_id=? ORDER BY created_at DESC LIMIT 30", (project_id,)).fetchall()
     latest_version_id = versions[0]["id"] if versions else None
-    return {"project": project_summary(project), "profile": dict(profile) if profile else None,
+    result = {"project": project_summary(project), "profile": dict(profile) if profile else None,
             "assets": {r["asset_type"]: {"content": r["content"], "version": r["version"], "updatedAt": r["updated_at"]} for r in assets},
             "versions": [dict(r) for r in versions], "gates": [dict(r) for r in gates], "events": [dict(r) for r in events], "sources": [dict(r) for r in sources],
             "audits": [{**dict(r), "is_current": r["version_id"] == latest_version_id} for r in audits],
             "detectors": [{**dict(r), "is_current": r["version_id"] == latest_version_id} for r in detectors],
-            "runs": [dict(r) for r in runs], "approvals": [dict(r) for r in approvals],
+            "runs": [dict(r) for r in runs], "approvals": [dict(r) for r in approvals], "qualityReviews": [dict(r) for r in quality_reviews],
             "continuity": [{**dict(r), "is_current": not r["source_version_id"] or r["source_version_id"] == latest_version_id} for r in continuity],
             "latestVersionId": latest_version_id}
+    result["workflow"] = build_workflow(result)
+    return result
+
+
+def has_real_value(value: object) -> bool:
+    text = str(value or "").strip()
+    return bool(text and text not in {"待设定", "未设定", "无"})
+
+
+def covers(version: dict | sqlite3.Row | None, start: int, end: int) -> bool:
+    return bool(version and int(version["range_start"]) <= start and int(version["range_end"]) >= end)
+
+
+def asset_ready(asset_type: str, value: object) -> bool:
+    text = str(value or "").strip(); minimum = {"synopsis": 100, "characters": 120, "world": 80, "beat_matrix": 150}.get(asset_type, 80)
+    return len(text) >= minimum and not re.search(r"待填写|待补充|TODO|TBD", text, re.I)
+
+
+def build_workflow(data: dict) -> dict:
+    profile = data.get("profile") or {}; gates = data.get("gates") or []; assets = data.get("assets") or {}; versions = data.get("versions") or []; latest = versions[0] if versions else None; latest_id = data.get("latestVersionId")
+    start, end = int(profile.get("submission_start", 1)), int(profile.get("submission_end", 10)); calibration_end = min(end, start + 2)
+    missing = [x for x in ("synopsis", "characters", "world", "beat_matrix") if not asset_ready(x, (assets.get(x) or {}).get("content", ""))]
+    audits, detectors = data.get("audits") or [], data.get("detectors") or []; passed = {x["gate_code"] for x in gates if x["status"] == "passed"}
+    calibration_version = next((x for x in versions if covers(x, start, calibration_end)), None)
+    structural = next((x for x in audits if x.get("is_current") and x["version_id"] == (calibration_version or {}).get("id") and x.get("audit_type") == "structural" and x.get("status") == "通过"), None)
+    deep = any(x.get("is_current") and x["version_id"] == latest_id and x.get("audit_type") == "deep_ai" and x.get("status") == "通过" and int(x.get("core_floor_pass", 0)) == 1 for x in audits)
+    quality_threshold = float(profile.get("quality_threshold", 90)); quality = next((x for x in data.get("qualityReviews", []) if x["version_id"] == latest_id and float(x["score"]) >= quality_threshold), None)
+    detector_required = int(profile.get("zhuque_required", 1)) != 0; zhuque_threshold = float(profile.get("zhuque_threshold", 85)); detector = any(x.get("is_current") and x["version_id"] == latest_id and x.get("status") == "通过" and float(x["human_score"]) >= zhuque_threshold for x in detectors)
+    checks = [
+        {"code": "G0", "title": "立项与参数", "ready": all((has_real_value(data.get("project", {}).get("name")), has_real_value(data.get("project", {}).get("route")), has_real_value(profile.get("region")), has_real_value(profile.get("medium")), has_real_value(profile.get("genre")), int(profile.get("total_episodes", 0)) > 0, has_real_value(profile.get("opening_template")))), "reason": "立项参数已齐" if has_real_value(profile.get("genre")) else "补齐地区、形式、题材、总集数和开头模板等立项参数"},
+        {"code": "G1", "title": "方案与卡点", "ready": not missing, "reason": f"项目资料待补：{'、'.join(missing)}" if missing else "四项项目资料已齐"},
+        {"code": "G2", "title": "第1—3集校准", "ready": bool(calibration_version and structural), "reason": ("校准稿结构审计已通过" if calibration_version and structural else ("先对校准稿运行结构审计" if calibration_version else "先保存覆盖校准范围的正文版本"))},
+        {"code": "G3", "title": "批次创作", "ready": bool(latest and covers(latest, start, end) and "G2" in passed), "reason": ("先批准G2校准闸门" if "G2" not in passed else ("正文版本尚未覆盖本次提交范围" if not latest or not covers(latest, start, end) else "提交范围正文已齐"))},
+        {"code": "G4", "title": "内容终审", "ready": bool(deep and quality and "G3" in passed), "reason": ("先批准G3批次创作" if "G3" not in passed else ("先对当前正文运行通过的AI内部深审" if not deep else (f"先为当前正文录入不低于{quality_threshold:g}分的人工内容质量评分" if not quality else "深审与内容质量评分已齐")))},
+        {"code": "G5", "title": "朱雀同版检测", "ready": bool((not detector_required or detector) and "G4" in passed), "reason": ("先批准G4内容终审" if "G4" not in passed else ("项目已关闭朱雀必检" if not detector_required else ("当前正文朱雀报告已达标" if detector else f"先保存当前正文实际朱雀报告，人工特征需达到{zhuque_threshold:g}%")))},
+        {"code": "G6", "title": "交付与归档", "ready": bool("G4" in passed and deep and quality and (not detector_required or ("G5" in passed and detector)) and latest and covers(latest, start, end)), "reason": ("先完成当前正文的G4内容终审" if "G4" not in passed or not deep or not quality else ("先完成当前正文的G5朱雀同版检测" if detector_required and ("G5" not in passed or not detector) else ("可提交最终交付" if latest and covers(latest, start, end) else "正文尚未覆盖本次提交范围")))},
+    ]
+    current = next((x for x in gates if x["status"] == "current"), None) or next((x for x in gates if x["status"] != "passed"), None) or (gates[-1] if gates else None); current_check = next((x for x in checks if x["code"] == (current or {}).get("gate_code")), checks[0]); passed_count = sum(1 for x in gates if x["status"] == "passed"); complete = passed_count == len(GATES)
+    return {"currentGate": (current or {}).get("gate_code", "G0"), "currentStage": "G6 已归档" if complete else f"{(current or {}).get('gate_code', 'G0')} {(current or {}).get('title', '立项与参数')}", "progress": 100 if complete else round(passed_count / len(GATES) * 100), "checks": checks, "complete": complete, "nextAction": {"gate": current_check["code"], "title": current_check["title"], "ready": complete or current_check["ready"], "message": ("G0—G6已全部通过，当前项目已归档" if complete else (f"可以处理{current_check['code']}：{current_check['title']}" if current_check["ready"] else f"{current_check['code']}暂不能批准：{current_check['reason']}"))}, "missingAssets": missing, "latestVersionCoversSubmission": bool(latest and covers(latest, start, end)), "calibrationEnd": calibration_end}
+
+
+def invalidate_review_gates(conn: sqlite3.Connection, project_id: str, stamp: str) -> None:
+    g3 = conn.execute("SELECT status FROM gates WHERE project_id=? AND gate_code='G3'", (project_id,)).fetchone()
+    conn.execute("UPDATE gates SET status='pending',note='正文已更新，旧终审证据失效',updated_at=? WHERE project_id=? AND gate_code IN ('G4','G5','G6')", (stamp, project_id))
+    if g3 and g3["status"] == "passed":
+        conn.execute("UPDATE gates SET status='current',note='等待当前正文重新终审',updated_at=? WHERE project_id=? AND gate_code='G4'", (stamp, project_id))
+        conn.execute("UPDATE project_profiles SET current_stage='G4 内容终审',progress=50,status='等待重新终审',updated_at=? WHERE project_id=?", (stamp, project_id))
 
 
 def parse_episode_number(token: str) -> int:
@@ -326,7 +374,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def send_json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+        self.send_response(status); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 
     def send_download(self, body: bytes, content_type: str, filename: str) -> None:
         self.send_response(200); self.send_header("Content-Type", content_type); self.send_header("Content-Disposition", "attachment; filename*=UTF-8''" + quote(filename)); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -342,7 +390,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"; parts = self.parts(path)
-        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.6.0"}); return
+        if path == "/api/health": self.send_json({"ok": True, "service": "剧本创作总控台", "storage": "sqlite", "version": "0.7.0"}); return
         if path == "/api/projects":
             with db() as conn: rows = conn.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
             self.send_json({"projects": [project_summary(r) for r in rows]}); return
@@ -361,7 +409,7 @@ class Handler(SimpleHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "export":
             query = urlparse(self.path).query; params = dict(x.split("=", 1) if "=" in x else (x, "") for x in query.split("&") if x); version_id = unquote(params.get("versionId", "")); fmt = params.get("format", "txt")
             with db() as conn:
-                detail = get_detail(conn, parts[2]); version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, parts[2])).fetchone() if version_id else conn.execute("SELECT * FROM draft_versions WHERE project_id=? ORDER BY created_at DESC LIMIT 1", (parts[2],)).fetchone()
+                detail = get_detail(conn, parts[2]); version = conn.execute("SELECT * FROM draft_versions WHERE id=? AND project_id=?", (version_id, parts[2])).fetchone() if version_id else conn.execute("SELECT * FROM draft_versions WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (parts[2],)).fetchone()
             if not detail: self.send_json({"error": "项目不存在"}, 404); return
             safe = re.sub(r'[\\/:*?"<>|]', "_", detail["project"]["name"])
             if fmt == "json": self.send_download(json.dumps({"detail": detail, "selectedVersion": dict(version) if version else None}, ensure_ascii=False, indent=2).encode(), "application/json; charset=utf-8", safe + ".json"); return
@@ -379,7 +427,8 @@ class Handler(SimpleHTTPRequestHandler):
             if path == "/api/projects":
                 data = self.read_json(); name = str(data.get("name", "")).strip(); route = str(data.get("route", "完全原创 / 市场参考")).strip()
                 if not name or len(name) > 120: self.send_json({"error": "项目名称不能为空且不超过120字"}, 400); return
-                min_duration, max_duration = int(data.get("durationMin", 120)), int(data.get("durationMax", 180)); quality, zhuque = float(data.get("qualityThreshold", 90)), float(data.get("zhuqueThreshold", 85))
+                min_duration, max_duration = int(data.get("durationMin", 120)), int(data.get("durationMax", 180)); quality, zhuque = float(data.get("qualityThreshold", 90)), float(data.get("zhuqueThreshold", 85)); total = int(data.get("totalEpisodes", 60)); submission_start = int(data.get("submissionStart", 1)); submission_end = int(data.get("submissionEnd", 10))
+                if total < 1 or submission_start < 1 or submission_end < submission_start or submission_end > total: self.send_json({"error": "总集数和本次提交范围必须有效，且提交范围不能超过总集数"}, 400); return
                 if min_duration < 30 or max_duration < min_duration or max_duration > 600: self.send_json({"error": "单集时长范围无效"}, 400); return
                 if not (0 <= quality <= 100 and 0 <= zhuque <= 100): self.send_json({"error": "质量和朱雀门槛必须在0—100之间"}, 400); return
                 project_id = "p-" + uuid.uuid4().hex[:12]; stamp = now_iso(); note = "新项目 · 待立项"
@@ -400,8 +449,11 @@ class Handler(SimpleHTTPRequestHandler):
                 if not label or not content.strip() or start < 1 or end < start: self.send_json({"error": "版本名称、正文和集数范围必须有效"}, 400); return
                 version_id = "v-" + uuid.uuid4().hex[:12]; stamp = now_iso(); digest = hashlib.sha256(content.encode("utf-8")).hexdigest(); source = str(data.get("source", "人工编辑"))
                 with db() as conn:
-                    if not conn.execute("SELECT 1 FROM projects WHERE id=?", (parts[2],)).fetchone(): self.send_json({"error": "项目不存在"}, 404); return
+                    profile = conn.execute("SELECT total_episodes FROM project_profiles WHERE project_id=?", (parts[2],)).fetchone()
+                    if not profile: self.send_json({"error": "项目不存在"}, 404); return
+                    if end > int(profile["total_episodes"] or 60): self.send_json({"error": f"正文范围不能超过项目总集数（{profile['total_episodes']}集）"}, 400); return
                     conn.execute("INSERT INTO draft_versions(id,project_id,label,range_start,range_end,content,sha256,source,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (version_id, parts[2], label, start, end, content, digest, source, "已保存", stamp))
+                    invalidate_review_gates(conn, parts[2], stamp)
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (parts[2], "version", f"保存正文版本 {label}（第{start}—{end}集）", stamp)); conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (stamp, parts[2]))
                 self.send_json({"version": {"id": version_id, "label": label, "range_start": start, "range_end": end, "sha256": digest, "source": source, "status": "已保存", "created_at": stamp}}, 201); return
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "audits":
@@ -434,6 +486,23 @@ class Handler(SimpleHTTPRequestHandler):
                     conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,output_preview=?,updated_at=? WHERE id=?", ("succeeded", "等待人工确认", 100, report["summary"][:3500], done, run_id))
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "audit", f"AI内部深审：{report['score']}分，{report['status']}；硬错误{len(report['hardErrors'])}项", done))
                 self.send_json({"report": {"id": report_id, "version_id": version_id, "sha256": version["sha256"], "created_at": done, "audit_type": "deep_ai", **report}, "runId": run_id}, 201); return
+            if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "quality":
+                data = self.read_json(); project_id = parts[2]; version_id = str(data.get("versionId", "")); note = str(data.get("note", "")).strip()
+                try: score = float(data.get("score"))
+                except (TypeError, ValueError): self.send_json({"error": "内容质量评分必须在0—100之间"}, 400); return
+                if score < 0 or score > 100: self.send_json({"error": "内容质量评分必须在0—100之间"}, 400); return
+                with db() as conn:
+                    project = conn.execute("SELECT id FROM projects WHERE id=?", (project_id,)).fetchone()
+                    version = conn.execute("SELECT id,sha256 FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone()
+                    latest = conn.execute("SELECT id FROM draft_versions WHERE project_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1", (project_id,)).fetchone()
+                if not project: self.send_json({"error": "项目不存在"}, 404); return
+                if not version: self.send_json({"error": "请选择当前项目的正文版本"}, 400); return
+                if not latest or latest["id"] != version_id: self.send_json({"error": "内容质量评分只能绑定当前最新正文"}, 409); return
+                review_id = "q-" + uuid.uuid4().hex[:12]; stamp = now_iso()
+                with db() as conn:
+                    conn.execute("INSERT INTO quality_reviews(id,project_id,version_id,score,note,actor,created_at) VALUES(?,?,?,?,?,?,?)", (review_id, project_id, version_id, score, note, "operator", stamp))
+                    conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "quality", f"人工内容质量评分：{score:g}分", stamp))
+                self.send_json({"review": {"id": review_id, "project_id": project_id, "version_id": version_id, "score": score, "note": note, "actor": "operator", "created_at": stamp, "sha256": version["sha256"]}}, 201); return
             if len(parts) == 4 and parts[:2] == ["api", "projects"] and parts[3] == "detectors":
                 data = self.read_json(); project_id = parts[2]; version_id = str(data.get("versionId", "")); human = float(data.get("humanScore", -1)); suspected = float(data.get("suspectedScore", 0)); ai = float(data.get("aiScore", 0)); name = str(data.get("reportName", "")).strip(); encoded = str(data.get("dataBase64", ""))
                 if any(x < 0 or x > 100 for x in (human, suspected, ai)): self.send_json({"error": "检测指标必须在0—100之间"}, 400); return
@@ -455,6 +524,7 @@ class Handler(SimpleHTTPRequestHandler):
             if len(parts) == 5 and parts[:2] == ["api", "projects"] and parts[3:] == ["model", "run"]:
                 data = self.read_json(); project_id = parts[2]; task_type = str(data.get("taskType", "reply")); instruction = str(data.get("instruction", "")).strip()
                 if not instruction: self.send_json({"error": "任务内容不能为空"}, 400); return
+                if task_type not in set(ASSET_TYPES) | {"draft", "reply"}: self.send_json({"error": "模型任务类型无效"}, 400); return
                 with db() as conn:
                     detail = get_detail(conn, project_id)
                     if detail: detail["sourceTexts"] = [dict(x) for x in conn.execute("SELECT name,extracted_text FROM source_documents WHERE project_id=? AND extraction_status=? ORDER BY created_at", (project_id, "已提取")).fetchall()]
@@ -472,7 +542,13 @@ class Handler(SimpleHTTPRequestHandler):
                         conn.execute("""INSERT INTO story_assets(project_id,asset_type,content,version,updated_at) VALUES(?,?,?,1,?) ON CONFLICT(project_id,asset_type) DO UPDATE SET content=excluded.content,version=story_assets.version+1,updated_at=excluded.updated_at""", (project_id, task_type, output, stamp))
                     elif task_type == "draft":
                         version_id = "v-" + uuid.uuid4().hex[:12]; digest = hashlib.sha256(output.encode()).hexdigest(); start = int(data.get("rangeStart", detail.get("profile", {}).get("submission_start", 1))); end = int(data.get("rangeEnd", detail.get("profile", {}).get("submission_end", 10)))
+                        total = int((detail.get("profile") or {}).get("total_episodes", 60))
+                        if start < 1 or end < start or end > total:
+                            message = f"模型正文范围无效，不能超过项目总集数（{total}集）"
+                            conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,error=?,output_preview=?,updated_at=? WHERE id=?", ("failed", "范围校验失败", 100, message, output[:3500], stamp, run_id))
+                            self.send_json({"error": message, "runId": run_id}, 400); return
                         conn.execute("INSERT INTO draft_versions(id,project_id,label,range_start,range_end,content,sha256,source,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (version_id, project_id, str(data.get("label", f"模型稿 {stamp[:16]}")), start, end, output, digest, "模型生成", "待人工审校", stamp))
+                        invalidate_review_gates(conn, project_id, stamp)
                     conn.execute("UPDATE task_runs SET status=?,stage=?,progress=?,output_preview=?,version_id=?,updated_at=? WHERE id=?", ("succeeded", "等待人工审校" if task_type == "draft" else "已保存", 100, output[:3500], version_id, stamp, run_id))
                     message = f"模型任务完成：{task_type}" + (("\n" + output[:3500]) if task_type == "reply" else "")
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "model", message, stamp)); conn.execute("UPDATE projects SET updated_at=? WHERE id=?", (stamp, project_id))
@@ -483,28 +559,41 @@ class Handler(SimpleHTTPRequestHandler):
                 with db() as conn:
                     detail = get_detail(conn, project_id); version = conn.execute("SELECT id,sha256 FROM draft_versions WHERE id=? AND project_id=?", (version_id, project_id)).fetchone() if version_id else None
                 if not detail: self.send_json({"error": "项目不存在"}, 404); return
+                gate_index = next(i for i, x in enumerate(GATES) if x[0] == gate_code)
+                current_gate = next((x for x in detail["gates"] if x["status"] == "current"), None)
+                if current_gate and current_gate["gate_code"] != gate_code: self.send_json({"error": f"当前只能处理{current_gate['gate_code']} {current_gate['title']}"}, 409); return
+                if decision == "approve" and next((x for x in detail["gates"] if x["gate_code"] == gate_code and x["status"] == "passed"), None): self.send_json({"error": "该闸门已经批准，不能重复提交"}, 409); return
+                if decision == "approve" and gate_index > 0:
+                    prior = next((x for x in detail["gates"][:gate_index] if x["status"] != "passed"), None)
+                    if prior: self.send_json({"error": f"必须先通过{prior['gate_code']} {prior['title']}"}, 409); return
                 if decision == "approve" and gate_code in {"G2", "G3", "G4", "G5", "G6"} and not version: self.send_json({"error": "该阶段批准必须绑定正文版本"}, 400); return
                 if decision == "approve" and version and version["id"] != detail.get("latestVersionId"): self.send_json({"error": "只能批准当前最新正文版本"}, 409); return
+                if decision == "approve" and gate_code in {"G0", "G1", "G2", "G3"}:
+                    check = next((x for x in detail["workflow"]["checks"] if x["code"] == gate_code), None)
+                    if not check or not check["ready"]: self.send_json({"error": (check or {}).get("reason", "当前阶段前置条件尚未满足")}, 409); return
                 if decision == "approve" and gate_code == "G4":
                     ok = any(x["audit_type"] == "deep_ai" and x["version_id"] == version_id and x["status"] == "通过" and int(x["core_floor_pass"]) == 1 for x in detail["audits"])
                     if not ok: self.send_json({"error": "G4需要当前版本AI内部深审达到项目门槛、核心底线通过且硬错误为0"}, 409); return
+                    quality_threshold = float((detail.get("profile") or {}).get("quality_threshold", 90))
+                    quality_ok = any(x["version_id"] == version_id and float(x["score"]) >= quality_threshold for x in detail.get("qualityReviews", []))
+                    if not quality_ok: self.send_json({"error": f"G4还需要当前正文人工内容质量评分达到{quality_threshold:g}分"}, 409); return
                 if decision == "approve" and gate_code == "G5" and int((detail.get("profile") or {}).get("zhuque_required", 1)) != 0:
                     threshold = float((detail.get("profile") or {}).get("zhuque_threshold", 85)); ok = any(x["version_id"] == version_id and x["status"] == "通过" and float(x["human_score"]) >= threshold for x in detail["detectors"])
                     if not ok: self.send_json({"error": f"G5需要当前版本朱雀人工特征达到{threshold:g}%并保存真实报告"}, 409); return
                 if decision == "approve" and gate_code == "G6":
-                    passed = {x["gate_code"] for x in detail["gates"] if x["status"] == "passed"}
-                    if "G4" not in passed or (int((detail.get("profile") or {}).get("zhuque_required", 1)) != 0 and "G5" not in passed): self.send_json({"error": "G6需要先通过内容终审和适用的朱雀门禁"}, 409); return
+                    check = next((x for x in detail["workflow"]["checks"] if x["code"] == "G6"), None)
+                    if not check or not check["ready"]: self.send_json({"error": (check or {}).get("reason", "G6需要当前正文通过内容终审和适用的朱雀门禁")}, 409); return
                 approval_id = "ap-" + uuid.uuid4().hex[:12]; stamp = now_iso(); status = "passed" if decision == "approve" else "blocked"; sha = version["sha256"] if version else ""
                 with db() as conn:
                     conn.execute("INSERT INTO approval_records(id,project_id,gate_code,decision,note,version_id,sha256,actor,created_at) VALUES(?,?,?,?,?,?,?,?,?)", (approval_id, project_id, gate_code, decision, note, version_id or None, sha, "operator", stamp))
                     conn.execute("UPDATE gates SET status=?,note=?,updated_at=? WHERE project_id=? AND gate_code=?", (status, note or status, stamp, project_id, gate_code))
                     if decision == "approve":
-                        idx = next(i for i, x in enumerate(GATES) if x[0] == gate_code)
+                        idx = gate_index
                         if idx < len(GATES) - 1: conn.execute("UPDATE gates SET status=?,note=?,updated_at=? WHERE project_id=? AND gate_code=? AND status<>?", ("current", "等待处理", stamp, project_id, GATES[idx + 1][0], "passed"))
                         next_gate = GATES[min(idx + 1, len(GATES) - 1)]
-                        conn.execute("UPDATE project_profiles SET current_stage=?,progress=?,status=?,updated_at=? WHERE project_id=?", (f"{next_gate[0]} {next_gate[1]}", 100 if gate_code == "G6" else round(((idx + 1) / 6) * 100), "已归档" if gate_code == "G6" else "等待人工处理", stamp, project_id))
+                        conn.execute("UPDATE project_profiles SET current_stage=?,progress=?,status=?,updated_at=? WHERE project_id=?", (f"{next_gate[0]} {next_gate[1]}", 100 if gate_code == "G6" else round(((idx + 1) / len(GATES)) * 100), "已归档" if gate_code == "G6" else "等待人工处理", stamp, project_id))
                     else:
-                        idx = next(i for i, x in enumerate(GATES) if x[0] == gate_code)
+                        idx = gate_index
                         conn.execute("UPDATE project_profiles SET current_stage=?,status=?,updated_at=? WHERE project_id=?", (f"{gate_code} {GATES[idx][1]}", "已阻塞", stamp, project_id))
                     conn.execute("INSERT INTO activity_logs(project_id,kind,message,created_at) VALUES(?,?,?,?)", (project_id, "approval", f"{gate_code}{'批准' if decision == 'approve' else '驳回'}：{note or '无备注'}", stamp))
                 self.send_json({"approval": {"id": approval_id, "gate_code": gate_code, "decision": decision, "note": note, "version_id": version_id or None, "sha256": sha, "created_at": stamp}}, 201); return

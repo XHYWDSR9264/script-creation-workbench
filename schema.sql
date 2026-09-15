@@ -134,6 +134,15 @@ CREATE TABLE IF NOT EXISTS approval_records (
 );
 CREATE INDEX IF NOT EXISTS idx_approval_records_project ON approval_records(project_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS quality_reviews (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, version_id TEXT NOT NULL,
+  score REAL NOT NULL, note TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL DEFAULT 'operator',
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY(version_id) REFERENCES draft_versions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_quality_reviews_project ON quality_reviews(project_id, created_at DESC);
+
 INSERT OR IGNORE INTO project_profiles(project_id,genre,current_stage,progress,status,updated_at)
 SELECT id,'待设定','G0 立项与参数',10,'待立项',updated_at FROM projects;
 INSERT OR IGNORE INTO gates(project_id,gate_code,title,status,note,updated_at)

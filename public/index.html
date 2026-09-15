@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#0b111a" />
   <title>剧本创作总控台</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=060" />
-  <link rel="stylesheet" href="workspace.css?v=060" />
+  <link rel="stylesheet" href="styles.css?v=071" />
+  <link rel="stylesheet" href="workspace.css?v=071" />
 </head>
 <body>
   <div class="app-shell">
@@ -53,7 +53,8 @@
       </header>
 
       <div class="preview-warning">公开预览环境：请勿上传敏感、保密或未获授权的素材。正式使用前建议启用访问控制。</div>
-      <div class="workspace" id="workspace">
+      <section class="empty-workspace hidden" id="emptyWorkspace"><div class="empty-mark">＋</div><span class="eyebrow">空白工作区</span><h1>从一个真实任务开始</h1><p>当前没有项目。新建项目后，系统会按G0—G6建立参数、方案、校准稿、分批正文、内容终审、朱雀同版证据和交付归档。</p><button class="primary-button" id="emptyCreateBtn">新建第一个项目</button></section>
+      <div class="workspace hidden" id="workspace">
         <section class="content-column">
           <div class="project-heading">
             <div>
@@ -131,8 +132,9 @@
         <aside class="inspector" aria-label="项目状态">
           <div class="inspector-header"><h2>项目状态</h2><button class="icon-button subtle">•••</button></div>
           <div class="status-summary"><div class="status-summary-top"><span class="status-dot amber"></span><strong>等待人工确认</strong></div><p>校准稿完成后才能进入批次创作。</p></div>
-          <div class="inspector-block"><div class="block-heading"><span>SOP阶段</span><span class="muted" id="gateProgress">G0 / 6</span></div><div class="gate-list" id="gateList"></div></div>
-          <div class="inspector-block"><div class="block-heading"><span>质量指标</span><button class="text-button" id="qualityDetailBtn">查看详情</button></div><div class="metric-row"><span>结构审计</span><strong class="muted" id="auditMetric">未审计</strong></div><div class="metric-row"><span>连续性审计</span><strong class="amber-text">待人工复核</strong></div><div class="metric-row"><span>内容质量</span><strong class="muted">待人工评分</strong></div><div class="metric-row"><span>朱雀人工特征</span><strong class="muted" id="detectorMetric">未检测</strong></div></div>
+          <div class="inspector-block"><div class="block-heading"><span>SOP阶段</span><span class="muted" id="gateProgress">G0 / G6</span></div><div class="gate-list" id="gateList"></div></div>
+          <div class="inspector-block"><div class="block-heading"><span>流程预检</span><span class="muted">自动定位阻塞项</span></div><div class="workflow-checklist" id="workflowChecklist"></div></div>
+          <div class="inspector-block"><div class="block-heading"><span>质量指标</span><button class="text-button" id="qualityDetailBtn">查看详情</button></div><div class="metric-row"><span>结构审计</span><strong class="muted" id="auditMetric">未审计</strong></div><div class="metric-row"><span>连续性审计</span><strong class="amber-text">待人工复核</strong></div><div class="metric-row"><span>内容质量</span><strong class="muted" id="qualityMetric">待人工评分</strong></div><div class="metric-row"><span>朱雀人工特征</span><strong class="muted" id="detectorMetric">未检测</strong></div></div>
           <div class="inspector-block"><div class="block-heading"><span>任务运行</span><button class="text-button" id="runHistoryBtn">运行历史</button></div><div id="runSummary" class="run-summary"></div></div>
           <div class="inspector-block log-block"><div class="block-heading"><span>运行日志</span><button class="text-button" id="allLogsBtn">全部日志</button></div><div id="activityLog"></div></div>
           <div class="next-action"><span class="next-icon">→</span><div><small>下一步</small><strong>确认第1—3集校准稿</strong></div><button id="nextActionBtn">打开</button></div>
@@ -151,7 +153,7 @@
 
   <div class="modal-backdrop hidden" id="settingsModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">模型网关</span><h2>接口设置</h2></div><button class="icon-button" id="closeSettingsModal">×</button></div><div class="modal-note secure-note">API Key只保存在当前浏览器会话，不写入数据库、运行日志或项目文件。</div><div class="form-grid"><label>Base URL<input id="llmBaseUrl" placeholder="例如：https://example.com/v1" /></label><label>模型名称<input id="llmModel" placeholder="例如：gpt-5.6-sol" /></label><label>接口协议<select id="llmWire"><option value="responses">Responses API</option><option value="chat">Chat Completions</option></select></label><label>推理强度<select id="llmReasoning"><option>high</option><option>xhigh</option><option>medium</option><option>low</option></select></label></div><label>API Key<input id="llmKey" type="password" autocomplete="off" placeholder="输入后仅保留到当前标签关闭" /></label><div class="test-result" id="modelTestResult">尚未测试接口</div><div class="modal-actions"><button class="small-button" id="testModelBtn">测试接口</button><button class="primary-button" id="saveSettingsBtn">保存本次会话</button></div></div></div>
 
-  <div class="modal-backdrop hidden" id="auditModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">SOP审校</span><h2>结构审计 + AI内部深审</h2></div><button class="icon-button" id="closeAuditModal">×</button></div><label>审计版本<select id="auditVersion"></select></label><div class="test-result" id="auditResult">结构审计检查集数、场次、乱码、越界、括号和重复句；AI内部深审执行八维评分与五张反查表。两者都不能替代人工终审批准。</div><div id="auditHistory" class="report-list"></div><div class="modal-actions"><button class="small-button" id="runDeepAuditBtn">AI深审（八维+五表）</button><button class="primary-button" id="runAuditBtn">运行结构审计</button></div></div></div>
+  <div class="modal-backdrop hidden" id="auditModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">SOP审校</span><h2>结构审计 + AI内部深审 + 人工评分</h2></div><button class="icon-button" id="closeAuditModal">×</button></div><label>审计版本<select id="auditVersion"></select></label><div class="test-result" id="auditResult">结构审计检查集数、场次、乱码、越界、括号和重复句；AI内部深审执行八维评分与五张反查表。两者都不能替代人工终审批准。</div><div id="auditHistory" class="report-list"></div><div class="quality-review-box"><div class="block-heading"><span>人工内容质量评分</span><span class="muted">独立于AI深审</span></div><div class="form-grid"><label>评分版本<select id="qualityVersion"></select></label><label>内容质量分<input id="qualityScore" type="number" min="0" max="100" step="0.1" placeholder="例如：90" /></label></div><label>评分依据<textarea id="qualityNote" placeholder="记录人物、因果、对白、节奏、情绪、可拍性与连续性判断"></textarea></label><button class="small-button" id="saveQualityBtn">保存人工评分</button></div><div class="modal-actions"><button class="small-button" id="runDeepAuditBtn">AI深审（八维+五表）</button><button class="primary-button" id="runAuditBtn">运行结构审计</button></div></div></div>
 
   <div class="modal-backdrop hidden" id="detectorModal" role="dialog" aria-modal="true"><div class="modal wide-modal"><div class="modal-header"><div><span class="eyebrow">朱雀同版证据</span><h2>登记真实检测报告</h2></div><button class="icon-button" id="closeDetectorModal">×</button></div><label>绑定正文版本<select id="detectorVersion"></select></label><div class="form-grid"><label>人工创作特征（%）<input id="humanScore" type="number" min="0" max="100" step="0.1" /></label><label>疑似AI特征（%）<input id="suspectedScore" type="number" min="0" max="100" step="0.1" value="0" /></label><label>AI创作特征（%）<input id="aiScore" type="number" min="0" max="100" step="0.1" value="0" /></label><label>朱雀报告截图<input id="detectorFile" type="file" accept="image/png,image/jpeg" /></label></div><div class="modal-note">保存时自动绑定所选正文SHA-256；正文产生新版本后，旧报告不能替代新版本检测。</div><div class="report-list" id="detectorReports"></div><div class="modal-actions"><button class="primary-button" id="saveDetectorBtn">保存检测报告</button></div></div></div>
 
@@ -164,6 +166,6 @@
   <div class="modal-backdrop hidden" id="continuityModal" role="dialog" aria-modal="true"><div class="modal extra-wide-modal"><div class="modal-header"><div><span class="eyebrow">连续性账本</span><h2>人物、道具、时间、权限与地点</h2></div><button class="icon-button" id="closeContinuityModal">×</button></div><div class="continuity-toolbar"><label>从正文提取<select id="continuityVersion"></select></label><button class="small-button" id="extractContinuityBtn">提取人物与地点</button></div><div id="continuityList" class="continuity-list"></div><h3>新增人工条目</h3><div class="form-grid"><label>类别<select id="continuityCategory"><option value="character">人物</option><option value="prop">道具</option><option value="timeline">时间线</option><option value="permission">权限/证照</option><option value="location">地点</option></select></label><label>主体<input id="continuitySubject" placeholder="例如：父亲留下的旧卡车" /></label><label>当前状态<input id="continuityState" placeholder="归属、伤势、是否取得、是否失效" /></label><label>首次出现集<input id="continuityFirst" type="number" min="1" /></label><label>最后确认集<input id="continuityLast" type="number" min="1" /></label><label>备注<input id="continuityNotes" placeholder="证据、后续待核项或人物所知边界" /></label></div><div class="modal-actions"><button class="primary-button" id="addContinuityBtn">添加到账本</button></div></div></div>
 
   <div class="toast hidden" id="toast"></div>
-  <script src="app.js?v=060"></script>
+  <script src="app.js?v=071"></script>
 </body>
 </html>
